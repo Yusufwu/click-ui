@@ -19,6 +19,14 @@ STATUS_LABELS = {
     "timeout": "超时",
     "error": "异常",
     "running": "执行中",
+    "skipped": "已跳过",
+}
+
+SCHEDULE_STATUS_LABELS = {
+    "success": "成功",
+    "failed": "失败",
+    "skipped": "已跳过",
+    "missed": "错过（停机）",
 }
 
 
@@ -58,6 +66,7 @@ def _topbar(
         "records": "is-active" if active == "records" else "",
         "queue": "is-active" if active == "queue" else "",
         "batches": "is-active" if active == "batches" else "",
+        "schedules": "is-active" if active == "schedules" else "",
     }
     admin = ' <span class="cliui-admin-badge">管理员</span>' if user.get("is_admin") else ""
     queue_badge = f'<span class="cliui-pill">{queue_count}</span>' if queue_count else ""
@@ -72,7 +81,7 @@ def _topbar(
     html_text = f"""
 <div class="cliui-topbar">
   <div class="cliui-brand">
-    <div class="cliui-brand-mark">CLI</div>
+    <a class="cliui-brand-mark" href="/overview" title="命令总览：查看所有 Click 命令及一句话说明">CLI</a>
     <div class="cliui-brand-text">
       <div class="cliui-brand-title">{esc(current_app.display_name() if current_app else "Click UI")}</div>
       <div class="cliui-brand-sub">Click → Web UI控制台</div>
@@ -84,6 +93,7 @@ def _topbar(
     <a class="cliui-top-link {active_cls['records']}" href="/records">执行记录</a>
     <a class="cliui-top-link {active_cls['queue']}" href="/queue">记录队列 {queue_badge}</a>
     <a class="cliui-top-link {active_cls['batches']}" href="/batches">执行批次</a>
+    <a class="cliui-top-link {active_cls['schedules']}" href="/schedules">定时任务</a>
     <span class="cliui-user">{esc(user.get("username", ""))}{admin}</span>
     {reload_button}
     <a class="cliui-top-link cliui-logout" href="/logout">退出</a>
@@ -258,6 +268,17 @@ def build_records_page(
                 {"label": "成功", "value": "success"},
                 {"label": "失败", "value": "failed"},
                 {"label": "预览", "value": "preview"},
+                {"label": "已跳过", "value": "skipped"},
+            ],
+        },
+        {
+            "type": "select",
+            "name": "trigger",
+            "label": "来源",
+            "clearable": True,
+            "options": [
+                {"label": "手动", "value": "manual"},
+                {"label": "定时", "value": "schedule"},
             ],
         },
     ]
@@ -283,6 +304,13 @@ def build_records_page(
         [
             {"name": "command_path", "label": "命令", "minWidth": 220},
             {"name": "status", "label": "状态", "type": "mapping", "map": STATUS_LABELS, "width": 90},
+            {
+                "name": "trigger",
+                "label": "来源",
+                "type": "mapping",
+                "map": {"manual": "手动", "schedule": "定时"},
+                "width": 80,
+            },
             {"name": "exit_code", "label": "退出码", "width": 90},
             {"name": "duration_ms", "label": "耗时(ms)", "width": 110},
             {"name": "created_at", "label": "执行时间", "width": 170},
@@ -330,6 +358,105 @@ def build_records_page(
             _topbar(apps, current_app, user, queue_count, "records"),
             _hero_simple("执行记录", "每次执行（含失败、预览与批量中的单项）都会单独保存，按执行人隔离；管理员可以按执行人筛选。"),
             crud,
+        ],
+    }
+
+
+def _one_line_help(node: CommandInfo) -> str:
+    text = (node.short_help or node.help or "").strip()
+    return text.splitlines()[0].strip() if text else ""
+
+
+def build_overview_page(
+    apps: t.List[AppEntry],
+    current_app: t.Optional[AppEntry],
+    user: t.Dict[str, t.Any],
+    queue_count: int,
+) -> t.Dict[str, t.Any]:
+    """Static overview of every registered command with a one-line summary."""
+    sections: t.List[str] = []
+    total_commands = 0
+    total_executable = 0
+    for entry in apps:
+        nodes = [
+            node
+            for node in entry.nodes.values()
+            if node is not entry.root and not node.hidden
+        ]
+        nodes.sort(key=lambda node: node.display_path())
+        total_commands += len(nodes)
+        total_executable += sum(1 for node in nodes if node.executable)
+
+        rows: t.List[str] = []
+        for node in nodes:
+            if node.is_group and node.executable:
+                kind = "命令组 · 可运行"
+                kind_cls = "is-group"
+            elif node.is_group:
+                kind = "命令组"
+                kind_cls = "is-group"
+            else:
+                kind = "可执行"
+                kind_cls = "is-run"
+            desc = _one_line_help(node) or "（暂无说明）"
+            indent = max(0, node.level - 1) * 16
+            rows.append(
+                f"""
+<div class="cliui-overview-item">
+  <a class="cliui-overview-path" href="{esc(command_url(entry.name, node.node_id))}"
+     style="padding-left:{indent}px">{esc(node.display_path())}</a>
+  <span class="cliui-overview-kind {kind_cls}">{kind}</span>
+  <span class="cliui-overview-desc">{esc(desc)}</span>
+</div>"""
+            )
+        body_html = "".join(rows) or (
+            '<div class="cliui-overview-empty">该应用还没有可展示的命令。</div>'
+        )
+        sections.append(
+            f"""
+<section class="cliui-overview-app">
+  <div class="cliui-overview-app-head">
+    <div>
+      <div class="cliui-overview-app-title">{esc(entry.display_name())}</div>
+      <div class="cliui-overview-app-sub">{esc(entry.description or "（暂无应用说明）")}</div>
+    </div>
+    <div class="cliui-overview-app-actions">
+      <span class="cliui-meta-chip">命令 {len(nodes)}</span>
+      <a class="cliui-overview-open" href="{esc(_app_link(entry))}">打开控制台</a>
+    </div>
+  </div>
+  <div class="cliui-overview-list-head">
+    <span>命令路径（点击进入）</span><span>类型</span><span>一句话说明</span>
+  </div>
+  <div class="cliui-overview-list">{body_html}</div>
+</section>"""
+        )
+
+    if not sections:
+        sections.append(
+            '<div class="cliui-overview-empty">还没有注册任何 Click 应用。</div>'
+        )
+
+    content = f"""
+<div class="cliui-overview-summary">
+  <span class="cliui-meta-chip">应用 {len(apps)}</span>
+  <span class="cliui-meta-chip">命令 {total_commands}</span>
+  <span class="cliui-meta-chip">可执行 {total_executable}</span>
+</div>
+{"".join(sections)}
+"""
+    return {
+        "type": "page",
+        "title": "",
+        "className": "cliui-page",
+        "body": [
+            _topbar(apps, current_app, user, queue_count, "overview"),
+            _hero_simple(
+                "命令总览",
+                "所有已注册 Click 应用的命令树。点击任意命令直接进入控制台并预选该命令；"
+                "点击左上角 CLI 标记可随时回到这里。",
+            ),
+            {"type": "tpl", "tpl": content},
         ],
     }
 
@@ -500,6 +627,153 @@ def build_batches_page(
     }
 
 
+def build_schedules_page(
+    apps: t.List[AppEntry],
+    current_app: t.Optional[AppEntry],
+    user: t.Dict[str, t.Any],
+    queue_count: int,
+) -> t.Dict[str, t.Any]:
+    columns: t.List[t.Dict[str, t.Any]] = [
+        {"name": "id", "label": "#", "width": 70},
+        {"name": "app_name", "label": "应用", "width": 110},
+        {"name": "command_path", "label": "命令", "minWidth": 200},
+        {
+            "type": "tpl",
+            "name": "plan",
+            "label": "计划",
+            "tpl": "${cron || run_at}",
+            "minWidth": 160,
+        },
+        {"name": "timezone", "label": "时区", "width": 140},
+        {
+            "name": "enabled",
+            "label": "状态",
+            "type": "mapping",
+            "map": {"1": "已启用", "0": "已暂停"},
+            "width": 90,
+        },
+        {"name": "next_run_at", "label": "下次运行", "width": 170},
+        {"name": "last_run_at", "label": "上次运行", "width": 170},
+        {
+            "name": "last_status",
+            "label": "上次结果",
+            "type": "mapping",
+            "map": SCHEDULE_STATUS_LABELS,
+            "width": 110,
+        },
+    ]
+    if user.get("is_admin"):
+        columns.append({"name": "created_by_name", "label": "创建人", "width": 110})
+    columns.append(
+        {
+            "type": "operation",
+            "label": "操作",
+            "width": 260,
+            "buttons": [
+                {
+                    "type": "button",
+                    "label": "立即运行",
+                    "level": "link",
+                    "actionType": "ajax",
+                    "api": {"method": "post", "url": "/api/schedules/${id}/run"},
+                    "confirmText": "立即执行一次该定时任务？执行记录会标记为“定时”。",
+                    "reload": "cliui-schedules",
+                },
+                {
+                    "type": "button",
+                    "label": "暂停",
+                    "level": "link",
+                    "actionType": "ajax",
+                    "api": {"method": "post", "url": "/api/schedules/${id}/toggle?enabled=0"},
+                    "reload": "cliui-schedules",
+                    "visibleOn": "this.enabled",
+                },
+                {
+                    "type": "button",
+                    "label": "启用",
+                    "level": "link",
+                    "actionType": "ajax",
+                    "api": {"method": "post", "url": "/api/schedules/${id}/toggle?enabled=1"},
+                    "reload": "cliui-schedules",
+                    "visibleOn": "!this.enabled",
+                },
+                {
+                    "type": "button",
+                    "label": "记录",
+                    "level": "link",
+                    "actionType": "url",
+                    "blank": False,
+                    "url": "/records/${last_execution_id}",
+                    "visibleOn": "this.last_execution_id",
+                },
+                {
+                    "type": "button",
+                    "label": "删除",
+                    "level": "link",
+                    "className": "text-danger",
+                    "actionType": "ajax",
+                    "api": {"method": "delete", "url": "/api/schedules/${id}"},
+                    "confirmText": "确定删除该定时任务？已有的执行记录会保留。",
+                    "reload": "cliui-schedules",
+                },
+            ],
+        }
+    )
+    crud = {
+        "type": "crud",
+        "name": "cliui-schedules",
+        "api": {"method": "get", "url": "/api/schedules"},
+        "syncLocation": False,
+        "perPage": 20,
+        "filterTogglable": False,
+        "filter": {
+            "title": "筛选条件",
+            "body": [
+                {
+                    "type": "select",
+                    "name": "app",
+                    "label": "应用",
+                    "clearable": True,
+                    "options": [
+                        {"label": app.display_name(), "value": app.name} for app in apps
+                    ],
+                }
+            ],
+            "submitOnChange": True,
+        },
+        "headerToolbar": [
+            {
+                "type": "button",
+                "label": "新建定时",
+                "level": "primary",
+                "actionType": "url",
+                "url": _app_link(current_app) if current_app else "/",
+            },
+            "filter-toggler",
+            {"type": "reload"},
+            "statistics",
+            "pagination",
+        ],
+        "footerToolbar": ["statistics", "pagination"],
+        "columns": columns,
+        "placeholder": "还没有定时任务。在命令表单中填写“定时设置”后点击“加入定时”即可创建。",
+    }
+    return {
+        "type": "page",
+        "title": "",
+        "className": "cliui-page cliui-wide-page",
+        "body": [
+            _topbar(apps, current_app, user, queue_count, "schedules"),
+            _hero_simple(
+                "定时任务",
+                "定时任务按 Cron 表达式或单次时间自动执行命令；执行结果会写入执行记录并标记为“定时”。"
+                "普通用户只能管理自己创建的定时任务，管理员可以查看全部。",
+            ),
+            crud,
+        ],
+    }
+
+
 def _static_text(label: str, value: t.Any, pre: bool = True) -> t.Dict[str, t.Any]:
     return {
         "type": "static",
@@ -560,9 +834,10 @@ def build_record_detail_page(
   <span class="cliui-detail-item">退出码 <b>{esc(record.get('exit_code'))}</b></span>
   <span class="cliui-detail-item">耗时 <b>{esc(record.get('duration_ms'))} ms</b></span>
   <span class="cliui-detail-item">执行人 <b>{esc(record.get('username'))}</b></span>
+  <span class="cliui-detail-item">来源 <b>{esc('定时' if record.get('trigger') == 'schedule' else '手动')}</b></span>
   <span class="cliui-detail-item">时间 <b>{esc(record.get('created_at'))}</b></span>
 </div>
-<div class="cliui-detail-path">{esc(record.get('command_path'))}</div>
+<div class="cliui-detail-path">{esc(record.get('command_path'))}{(' · 定时任务 #' + str(record.get('schedule_id'))) if record.get('schedule_id') else ''}</div>
 """,
             },
             {

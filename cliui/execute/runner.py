@@ -28,6 +28,7 @@ STATUS_LABELS = {
     "failed": "执行失败",
     "preview": "命令预览（未执行）",
     "queued": "已加入记录队列",
+    "skipped": "已跳过（执行锁被占用）",
 }
 
 
@@ -141,12 +142,35 @@ def execute_command(
     argv: t.Sequence[str],
     *,
     max_output_chars: int = 200_000,
+    wait_seconds: t.Optional[float] = None,
 ) -> ExecutionResult:
-    """Run ``entry.cli`` with ``argv`` inside the application directory."""
+    """Run ``entry.cli`` with ``argv`` inside the application directory.
+
+    ``wait_seconds`` is only used by the scheduler: web requests wait for the
+    execution lock, while a scheduled fire can give up and be recorded as
+    ``skipped`` instead of blocking the next job.
+    """
     args = [str(item) for item in argv]
     started = time.perf_counter()
 
-    with _EXEC_LOCK:
+    if wait_seconds is None:
+        acquired = _EXEC_LOCK.acquire()
+    else:
+        acquired = _EXEC_LOCK.acquire(timeout=max(0.0, float(wait_seconds)))
+    if not acquired:
+        return ExecutionResult(
+            status="skipped",
+            exit_code=None,
+            stdout="",
+            stderr="",
+            exception="",
+            duration_ms=0,
+            argv=args,
+            message="另一个命令正在执行，本次定时执行已跳过。",
+            exception_type="ExecutionLockBusy",
+        )
+
+    try:
         previous = os.getcwd()
         try:
             try:
@@ -193,6 +217,8 @@ def execute_command(
                 os.chdir(previous)
             except OSError:
                 pass
+    finally:
+        _EXEC_LOCK.release()
 
     duration = int((time.perf_counter() - started) * 1000)
     stdout, out_cut = _truncate(result.stdout or "", max_output_chars)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import typing as t
 import uuid
 from datetime import timedelta
@@ -27,6 +28,15 @@ from cliui.config import ServeConfig
 from cliui.execute.runner import ExecutionResult, execute_command
 from cliui.model import AppEntry, CommandInfo
 from cliui.registry import AppLoadError, reload_app_entry
+from cliui.scheduling import (
+    SchedulerService,
+    next_fire_for_schedule,
+    next_fire_preview_message,
+    next_fire_time,
+    next_fire_times,
+    run_schedule_once,
+    validate_schedule,
+)
 from cliui.schema.argv import argv_preview, parse_command
 from cliui.storage.repo import Store, summarize_params
 from cliui.web.auth import api_login_required, load_user, login_required
@@ -38,6 +48,8 @@ from cliui.web.pages import (
     build_queue_page,
     build_record_detail_page,
     build_records_page,
+    build_overview_page,
+    build_schedules_page,
 )
 
 
@@ -72,6 +84,14 @@ def _safe_filename(name: str) -> str:
     base = re.sub(r"[^\w.\- ()\[\]]+", "_", base, flags=re.UNICODE)
     base = base.strip(" .")
     return base or "upload.bin"
+
+
+def _truthy(value: t.Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on", "y")
 
 
 def _command_label(node: CommandInfo) -> str:
@@ -109,6 +129,7 @@ def create_app(
     store: Store,
     config: ServeConfig,
     secret_key: t.Optional[str] = None,
+    scheduler: t.Optional[SchedulerService] = None,
 ) -> Flask:
     app = Flask(
         __name__,
@@ -126,6 +147,10 @@ def create_app(
     )
 
     apps_by_name: t.Dict[str, AppEntry] = {entry.name: entry for entry in entries}
+    if scheduler is not None:
+        # The reload endpoint replaces the dict contents in place, so the
+        # scheduler shares the same mapping and always sees fresh entries.
+        scheduler.apps_by_name = apps_by_name
 
     app.before_request(load_user(store))
 
@@ -229,6 +254,18 @@ def create_app(
         if not g.user.get("is_admin") and row["user_id"] != g.user["id"]:
             abort(403)
 
+    def require_schedule_owned(row: t.Dict[str, t.Any]) -> None:
+        if not g.user.get("is_admin") and int(row["created_by"]) != int(g.user["id"]):
+            abort(403)
+
+    def sync_scheduler() -> None:
+        if scheduler is None:
+            return
+        try:
+            scheduler.sync()
+        except Exception:  # noqa: BLE001 - a page action must not fail on resync
+            app.logger.exception("scheduler resync failed")
+
     # -------------------------------------------------------------------- auth
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -315,6 +352,13 @@ def create_app(
         )
         return render_page(page, f"{entry.display_name()} · 控制台")
 
+    @app.get("/overview")
+    @login_required
+    def overview_page():
+        entry = pick_app(request.args.get("app"))
+        page = build_overview_page(entries, entry, g.user, queue_count())
+        return render_page(page, "命令总览")
+
     @app.get("/records")
     @login_required
     def records_page():
@@ -346,6 +390,13 @@ def create_app(
         entry = pick_app(request.args.get("app"))
         page = build_batches_page(entries, entry, g.user, queue_count())
         return render_page(page, "执行批次")
+
+    @app.get("/schedules")
+    @login_required
+    def schedules_page():
+        entry = pick_app(request.args.get("app"))
+        page = build_schedules_page(entries, entry, g.user, queue_count())
+        return render_page(page, "定时任务")
 
     @app.get("/batches/")
     @login_required
@@ -448,6 +499,7 @@ def create_app(
         command = request.args.get("command") or None
         app_name = request.args.get("app") or None
         username = request.args.get("username") or None
+        trigger = request.args.get("trigger") or None
         admin = bool(g.user.get("is_admin"))
         if not admin:
             username = None
@@ -459,6 +511,7 @@ def create_app(
             command=command,
             status=status,
             username=username,
+            trigger=trigger,
         )
         for item in items:
             item.pop("stdout", None)
@@ -729,6 +782,163 @@ def create_app(
                 ]
             },
         )
+
+    # ------------------------------------------------------------- schedules
+    def _schedule_plan(data: t.Dict[str, t.Any]) -> t.Tuple[
+        t.Optional[str], t.Optional[str], str
+    ]:
+        cron = str(data.get("cron") or "").strip() or str(
+            data.get("cron_preset") or ""
+        ).strip()
+        return validate_schedule(
+            trigger_type=str(data.get("trigger_type") or "cron"),
+            cron=cron,
+            run_at=str(data.get("run_at") or ""),
+            timezone=str(data.get("timezone") or ""),
+        )
+
+    @app.post("/api/schedules/preview")
+    @api_login_required
+    def api_schedule_preview():
+        data = _payload()
+        try:
+            cron, run_at, tz = _schedule_plan(data)
+            times = next_fire_times(
+                cron=cron, run_at=run_at, timezone=tz, count=3
+            )
+        except ValueError as exc:
+            return _status_payload(ok=False, msg=str(exc), http_status=400)
+        return _status_payload(
+            ok=True,
+            msg=next_fire_preview_message(times),
+            data={"times": times},
+        )
+
+    @app.post("/api/schedules")
+    @api_login_required
+    def api_schedule_create():
+        data = _payload()
+        entry = entry_for(data)
+        if entry is None:
+            return api_error("应用不存在", 404)
+        node = node_for(entry, data)
+        if node is None:
+            return api_error("命令不存在", 404)
+        parsed = parsed_for(entry, node, data)
+        if parsed.errors:
+            return _status_payload(
+                ok=False, msg="表单校验未通过", errors=parsed.errors
+            )
+        try:
+            cron, run_at, tz = _schedule_plan(data)
+        except ValueError as exc:
+            return api_error(str(exc))
+        next_value = next_fire_time(cron=cron, run_at=run_at, timezone=tz)
+        if next_value is None:
+            return api_error("该计划没有未来的触发时间，请修改运行时间")
+        root_name = entry.root.name if entry.root else entry.name
+        try:
+            schedule_id = store.create_schedule(
+                app_name=entry.name,
+                command_path=_command_label(node),
+                argv=parsed.argv,
+                params=parsed.field_values,
+                argv_label=argv_preview(root_name, parsed.argv),
+                cron=cron,
+                run_at=run_at,
+                timezone=tz,
+                catch_up=_truthy(data.get("catch_up")),
+                enabled=True,
+                created_by=g.user["id"],
+                created_by_name=g.user["username"],
+                next_run_at=next_value,
+            )
+        except sqlite3.Error as exc:
+            return api_error(f"创建定时任务失败: {exc}")
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg=f"已创建定时任务 #{schedule_id}，下次运行 {next_value}",
+            data={"schedule_id": schedule_id, "next_run_at": next_value},
+        )
+
+    @app.get("/api/schedules")
+    @api_login_required
+    def api_schedule_list():
+        page = _int_arg("page", 1)
+        per_page = _int_arg("perPage", 20)
+        app_name = request.args.get("app") or None
+        admin = bool(g.user.get("is_admin"))
+        items, total = store.list_schedules(
+            user_id=None if admin else g.user["id"],
+            page=page,
+            per_page=per_page,
+            app=app_name,
+        )
+        for item in items:
+            item.pop("params_json", None)
+            item.pop("argv_json", None)
+        return jsonify({"status": 0, "msg": "", "data": {"items": items, "total": total}})
+
+    @app.post("/api/schedules/<int:schedule_id>/run")
+    @api_login_required
+    def api_schedule_run(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        status, execution_id = run_schedule_once(
+            store,
+            apps_by_name,
+            row,
+            max_output_chars=config.max_output_chars,
+            wait_seconds=None,
+        )
+        store.mark_schedule_result(
+            schedule_id, status=status, execution_id=execution_id
+        )
+        return _status_payload(
+            ok=True,
+            msg=f"已执行定时任务 #{schedule_id}：{status}",
+            data={"execution_id": execution_id, "status": status},
+        )
+
+    @app.post("/api/schedules/<int:schedule_id>/toggle")
+    @api_login_required
+    def api_schedule_toggle(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        enabled = request.args.get("enabled", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        next_value: t.Optional[str] = None
+        if enabled:
+            next_value = next_fire_for_schedule(row)
+            if next_value is None:
+                return api_error("该单次任务的时间已过，无法启用")
+        store.set_schedule_enabled(schedule_id, enabled, next_value)
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg="已启用" if enabled else "已暂停",
+            data={"enabled": enabled, "next_run_at": next_value},
+        )
+
+    @app.delete("/api/schedules/<int:schedule_id>")
+    @api_login_required
+    def api_schedule_delete(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        store.delete_schedule(schedule_id)
+        sync_scheduler()
+        return _status_payload(ok=True, msg="已删除定时任务")
 
     @app.post("/api/upload")
     @api_login_required

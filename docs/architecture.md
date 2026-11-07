@@ -29,10 +29,11 @@ SQLite records / queue / batches        stdout · stderr · exit code · duratio
 
 | Path | Responsibility |
 | --- | --- |
-| `cliui/cli.py` | `cliui serve`, `cliui tree`, `cliui user` entry points |
+| `cliui/cli.py` | `cliui serve`, `cliui scheduler`, `cliui tree`, `cliui user` entry points |
 | `cliui/config.py` | `Config` dataclass, environment variable fallbacks |
 | `cliui/registry.py` | Loads `module:attr` / `file.py:attr` specs, validates the object is a Click command |
 | `cliui/model.py` | `AppEntry`, `Node`, `ParamInfo`, `ExecutionResult` dataclasses |
+| `cliui/scheduling.py` | Cron / one-off scheduling, shared by the web thread and the standalone process (no Flask imports) |
 | `cliui/introspect/` | Walks command trees and extracts parameter metadata |
 | `cliui/schema/` | Builds AMIS JSON (nav, forms, pages) and converts form values to argv |
 | `cliui/execute/` | In-process execution through `click.testing.CliRunner` |
@@ -83,8 +84,10 @@ plain HTTP assertions.
 - Array-ish parameters (`multiple`, `nargs != 1`, tuples) → `input-array` with sensible
   `minLength` / `maxLength`.
 
-AMIS form actions are fixed: **执行** posts to `/api/execute`, **加入队列** posts to `/api/queue`.
-Neither depends on a client-side mode flag.
+AMIS form actions are fixed: **执行** posts to `/api/execute`, **加入队列** posts to
+`/api/queue`, and **加入定时** posts to `/api/schedules`. None of them depends on a client-side
+mode flag. The schedule panel also carries a preview action that posts the current form values to
+`/api/schedules/preview`.
 
 ## argv conversion and validation
 
@@ -126,6 +129,10 @@ Details that matter:
 There is no per-command timeout. A CLI that hangs will hold the executor lock; make sure your
 commands terminate.
 
+The lock is shared by web requests and scheduled fires. Web requests wait for it indefinitely;
+the scheduler passes `wait_seconds` and, if the lock is still busy, records the run as
+`skipped` instead of delaying the next job.
+
 ## Storage
 
 SQLite tables (created on first start):
@@ -133,17 +140,54 @@ SQLite tables (created on first start):
 | Table | Contents |
 | --- | --- |
 | `users` | id, username, PBKDF2 password hash, admin flag, timestamps |
-| `executions` | operator, app, node id, command path, params JSON, argv JSON, status, exit code, duration, stdout, stderr, exception, batch linkage |
+| `executions` | operator, app, node id, command path, params JSON, argv JSON, status, exit code, duration, stdout, stderr, exception, batch linkage, trigger (`manual` / `schedule`), schedule id |
 | `queue_items` | operator, app, node id, label, params, created time, sort order |
 | `batches` | operator, app, status, item count, timestamps |
+| `schedules` | app, command path, argv/params JSON, cron or run-at, timezone, catch-up flag, enabled, creator, next/last run, last status, last execution id |
+| `app_specs` | registered `module:attr` specs and base working directories, published by `serve` for the standalone scheduler |
 
 All queries are scoped by `user_id`; administrators can list records across operators. Queue
-operations (add, delete, move, clear) verify ownership before mutating.
+operations (add, delete, move, clear) verify ownership before mutating; schedules use
+`created_by` for the same check.
+
+Schema changes are applied in place: `init_db()` runs `PRAGMA table_info` against existing tables
+and adds new columns with `ALTER TABLE` (for example `executions.trigger` and
+`executions.schedule_id`), so an existing data directory keeps working after an upgrade.
+
+## Scheduling
+
+`cliui/scheduling.py` owns everything time-related and imports no Flask, so the same code runs
+inside `cliui serve --scheduler` (background thread) and in the standalone `cliui scheduler`
+process.
+
+- `validate_schedule()` accepts either a five-field cron expression (`CronTrigger.from_crontab`)
+  or a single run-at timestamp, validates the IANA time zone, and normalizes both.
+- `next_fire_times()` asks the trigger for the next N fires without sleeping; the form preview
+  and the API share this path, which keeps tests fast and deterministic.
+- `SchedulerService` builds a `BackgroundScheduler` or `BlockingScheduler`, loads enabled rows
+  from `schedules`, and keeps `next_run_at` in sync. UI changes call `sync()` to rebuild jobs.
+- Schedules store the command **path** (`system password`), not the traversal node id, because
+  node ids shift whenever the command tree changes. At fire time the scheduler resolves the
+  path against freshly loaded apps; a removed app or command produces a failed execution record.
+- `claim_schedule_run()` is a conditional update
+  (`WHERE id = ? AND enabled = 1 AND next_run_at = ?`). Exactly one process wins a slot; a stale
+  `next_run_at` means another process already handled it.
+- On startup `recover_missed()` marks overdue schedules as `missed`, or — when catch-up is
+  enabled — claims and runs them once.
+- A scheduled fire skips the form/argv layer: the stored argv goes straight to
+  `execute_command()`, and the record is written with `trigger='schedule'` and `schedule_id`.
+- `serve` publishes its registered specs into `app_specs`, so `cliui scheduler --data-dir ...`
+  can start without repeating the application arguments.
 
 ## Web and auth
 
 - `create_app(entries, store, config)` builds the Flask app; pages are rendered server-side into
   an AMIS `embed` payload, while the browser only loads the bundled AMIS SDK.
+- Pages: `/` (console), `/overview` (all commands with one-line help, reachable by clicking the
+  CLI badge), `/records`, `/queue`, `/batches`, `/schedules`.
+- Schedules API: `POST /api/schedules` (create), `POST /api/schedules/preview`,
+  `GET /api/schedules`, `POST /api/schedules/<id>/run`, `POST /api/schedules/<id>/toggle`,
+  `DELETE /api/schedules/<id>`; ownership is checked with `require_schedule_owned`.
 - Sessions use an HMAC-signed cookie (`HttpOnly`, `SameSite=Lax`, 7-day lifetime) and a secret
   key persisted in the data directory.
 - HTML routes use `login_required`; JSON APIs use `api_login_required`, which returns 401 JSON

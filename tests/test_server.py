@@ -170,10 +170,22 @@ def test_missing_page_is_rendered_for_anonymous_visitors(client):
 
 
 def test_overview_and_pages_render(admin_client, fixture_entry):
-    for path in ("/", "/records", "/queue", "/batches"):
+    for path in ("/", "/records", "/queue", "/batches", "/schedules", "/overview"):
         response = admin_client.get(path)
         assert response.status_code == 200
         assert "cliui-page" in response.get_data(as_text=True)
+
+
+def test_command_overview_lists_commands_and_brand_links_to_it(
+    admin_client, fixture_entry
+):
+    response = admin_client.get("/overview")
+    page = response.get_data(as_text=True)
+    assert "命令总览" in page
+    assert "sub run" in page
+    assert "回显文本" in page
+    assert "cliui-brand-mark" in page
+    assert 'href=\\"/overview\\"' in page
 
 
 def test_preview_and_execute(admin_client, fixture_entry, store):

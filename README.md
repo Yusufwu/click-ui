@@ -12,8 +12,8 @@
 
 `click-ui` introspects a normal Click application at runtime and renders it as an
 [AMIS](https://amis.baidu.com/) console: a navigation tree for your command groups, a real
-form for every argument and option, execution records per operator, and a queue for
-batch-running commands.
+form for every argument and option, execution records per operator, a queue for batch-running
+commands, and cross-platform cron / one-off scheduling.
 
 ```bash
 # from the repository root
@@ -109,6 +109,26 @@ from a terminal, and wrapping every script in yet another bespoke admin page doe
 - The queue survives page reloads because it lives in the database, not the browser.
 - Every batch is stored as its own batch record with per-item status, history and output.
 
+**Scheduled execution**
+
+- Fill in the **Schedule settings** panel on any command form: a 5-field cron expression or a
+  one-off time, then press **Add schedule**. IANA time zones (default `Asia/Shanghai`), cron
+  presets and a preview of the next three fires are included.
+- Run the scheduler as a standalone process (`cliui scheduler --data-dir data`) in production,
+  or in-process with `cliui serve --scheduler` during development. Both share one code path and
+  the same SQLite database.
+- Fires missed while the scheduler was down are marked `missed`; each schedule can opt into a
+  single catch-up run.
+- Each fire is claimed atomically in SQLite, so multiple processes never run the same slot twice.
+  Records are tagged with source `schedule` and link back to their schedule.
+- Regular users manage only their own schedules; administrators can see every schedule.
+
+**Command overview**
+
+- `/overview` lists every command across all registered apps with a one-line summary. Clicking a
+  command opens its form directly.
+- Clicking the **CLI** badge in the top-left corner returns to the overview at any time.
+
 **Multi-app, multi-user**
 
 - Serve several Click applications side by side with `name=module:cli` specs.
@@ -125,7 +145,8 @@ from a terminal, and wrapping every script in yet another bespoke admin page doe
 
 ## Quick start
 
-Requirements: Python 3.9+, Click 8.1+, Flask 3.
+Requirements: Python 3.9+, Click 8.1+, Flask 3, APScheduler 3.10+ (Windows time zones come from
+the `tzdata` dependency).
 
 ```bash
 # 1. install from the repository root
@@ -226,6 +247,8 @@ Read the design notes in [docs/architecture.md](docs/architecture.md).
 | `--max-upload-mb` | `64` | Upload size limit |
 | `--debug/--no-debug` | off | Flask debug mode |
 | `--open/--no-open` | off | Open the browser after start |
+| `--scheduler/--no-scheduler` | off | Start the scheduler thread inside the web process (dev-friendly) |
+| `--scheduler-wait-seconds` | `0` | Seconds a scheduled fire waits for the execution lock before being recorded as `skipped` |
 
 ### Environment variables
 
@@ -235,11 +258,26 @@ Read the design notes in [docs/architecture.md](docs/architecture.md).
 | `CLIUI_ADMIN_PASSWORD` | Initial admin password |
 | `CLIUI_SECRET_KEY` | Flask session key |
 
+### `cliui scheduler`
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `SPEC...` | optional | Omit to reuse the apps registered by `cliui serve` in the database |
+| `--data-dir` | `./data` | Must match the web console's data directory |
+| `--db-path` | `<data-dir>/cliui.sqlite3` | Override the SQLite file |
+| `--max-output-chars` | `200000` | Maximum characters stored per stream |
+| `--scheduler-wait-seconds` | `0` | Seconds to wait for the execution lock before recording `skipped` |
+
+`cliui scheduler` runs happily alongside the web console: schedules live in SQLite and each
+fire is claimed atomically through `next_run_at`, so only one process executes a given slot.
+In production, run it under systemd, NSSM or as a container sidecar.
+
 ## CLI reference
 
 ```bash
 cliui --version
 cliui serve [SPEC...] [options]      # start the web console
+cliui scheduler [SPEC...] [options]  # start the standalone scheduler
 cliui tree SPEC [--json]             # inspect the command tree and node ids
 cliui user add <name> [password] [--admin] [--data-dir DIR]
 cliui user list [--data-dir DIR]
@@ -278,6 +316,9 @@ cli [cli]  (/path/to/examples)
   preview/record pipeline like any other argument.
 - `--admin-password` may appear in shell history or process listings; prefer the generated
   password or `CLIUI_ADMIN_PASSWORD` on servers.
+- Scheduled runs are recorded under the schedule creator's name, but the command still runs with
+  the service account's operating-system permissions. Run the console and the scheduler under a
+  dedicated account with only the privileges your CLI needs.
 
 ## Development
 
@@ -293,13 +334,14 @@ Project layout:
 
 ```
 cliui/
-  cli.py            # cliui serve / tree / user
+  cli.py            # cliui serve / scheduler / tree / user
   config.py         # runtime configuration
   registry.py       # module:attr loading
+  scheduling.py     # cron / one-off scheduling (web thread and standalone process)
   introspect/       # Click → command tree / parameter metadata
   schema/           # command tree → AMIS JSON and argv conversion
   execute/          # in-process CliRunner execution
-  storage/          # SQLite users, records, queue, batches
+  storage/          # SQLite users, records, queue, batches, schedules
   web/              # Flask app, pages, routes, bundled AMIS assets
 examples/           # demo applications
 docs/               # quickstart, architecture, screenshots

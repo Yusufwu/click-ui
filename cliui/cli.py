@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import webbrowser
 
@@ -11,6 +12,7 @@ import click
 from cliui import __version__
 from cliui.config import build_config
 from cliui.registry import AppLoadError, load_app_entry, load_apps
+from cliui.scheduling import SchedulerService
 from cliui.storage.repo import Store
 
 
@@ -44,6 +46,19 @@ def main() -> None:
 )
 @click.option("--debug/--no-debug", default=False, help="启用 Flask 调试模式")
 @click.option("--open/--no-open", "open_browser", default=False, help="启动后打开浏览器")
+@click.option(
+    "--scheduler/--no-scheduler",
+    "run_scheduler",
+    default=False,
+    help="在同一进程内启动定时调度线程（开发环境推荐；生产可独立运行 cliui scheduler）",
+)
+@click.option(
+    "--scheduler-wait-seconds",
+    default=0,
+    type=float,
+    show_default=True,
+    help="定时触发等待执行锁的秒数，超时记为 skipped",
+)
 def serve_command(
     specs: tuple,
     host: str,
@@ -56,6 +71,8 @@ def serve_command(
     max_upload_mb: int,
     debug: bool,
     open_browser: bool,
+    run_scheduler: bool,
+    scheduler_wait_seconds: float,
 ) -> None:
     """启动 Web 控制台。
 
@@ -100,7 +117,27 @@ def serve_command(
 
     from cliui.web.server import create_app
 
-    app = create_app(entries=entries, store=store, config=config)
+    store.save_app_specs(
+        [
+            (entry.name, entry.import_spec or "", entry.base_cwd or "")
+            for entry in entries
+            if entry.import_spec
+        ]
+    )
+    scheduler_service = None
+    if run_scheduler:
+        scheduler_service = SchedulerService(
+            store=store,
+            apps_by_name={entry.name: entry for entry in entries},
+            max_output_chars=config.max_output_chars,
+            wait_seconds=scheduler_wait_seconds,
+            log=lambda message: click.echo(f"[scheduler] {message}"),
+        )
+        scheduler_service.start()
+
+    app = create_app(
+        entries=entries, store=store, config=config, scheduler=scheduler_service
+    )
     url = f"http://{host}:{port}/"
     click.echo("已注册应用：")
     for entry in entries:
@@ -120,6 +157,93 @@ def serve_command(
         use_reloader=False,
         threaded=True,
     )
+
+
+@main.command("scheduler")
+@click.argument("specs", nargs=-1, required=False)
+@click.option("--data-dir", default=None, help="数据目录（默认 ./data）")
+@click.option("--db-path", default=None, help="SQLite 文件路径")
+@click.option(
+    "--max-output-chars",
+    default=200_000,
+    type=int,
+    show_default=True,
+    help="单条输出最多保存的字符数",
+)
+@click.option(
+    "--scheduler-wait-seconds",
+    default=0,
+    type=float,
+    show_default=True,
+    help="等待执行锁的秒数，超时记为 skipped",
+)
+def scheduler_command(
+    specs: tuple,
+    data_dir: str | None,
+    db_path: str | None,
+    max_output_chars: int,
+    scheduler_wait_seconds: float,
+) -> None:
+    """启动独立的定时调度进程（生产环境推荐）。
+
+    不传 SPEC 时，会使用 `cliui serve` 上次注册并保存在数据库里的应用；
+    也可以像 serve 一样用 module:attr 或 path/to/file.py:attr 显式指定。
+    """
+    config = build_config(
+        data_dir=data_dir, db_path=db_path, max_output_chars=max_output_chars
+    )
+    store = Store(config.db_path)
+
+    if specs:
+        try:
+            entries = load_apps(list(specs))
+        except AppLoadError as exc:
+            raise click.UsageError(str(exc)) from exc
+        store.save_app_specs(
+            [
+                (entry.name, entry.import_spec or "", entry.base_cwd or "")
+                for entry in entries
+                if entry.import_spec
+            ]
+        )
+    else:
+        saved = store.load_app_specs()
+        if not saved:
+            raise click.UsageError(
+                "数据库里还没有注册应用。请先运行 `cliui serve ...`，"
+                "或者直接给 scheduler 传入应用地址。"
+            )
+        entries = []
+        for row in saved:
+            try:
+                entry = load_app_entry(
+                    row["import_spec"], row.get("base_cwd") or os.getcwd()
+                )
+            except AppLoadError as exc:
+                click.echo(f"警告：应用 {row['name']} 加载失败，已跳过：{exc}")
+                continue
+            entry.name = row["name"]
+            entries.append(entry)
+
+    if not entries:
+        raise click.UsageError("没有可用的应用，调度器无法运行。")
+
+    service = SchedulerService(
+        store=store,
+        apps_by_name={entry.name: entry for entry in entries},
+        max_output_chars=config.max_output_chars,
+        wait_seconds=scheduler_wait_seconds,
+        blocking=True,
+        log=lambda message: click.echo(f"[scheduler] {message}"),
+    )
+    click.echo(f"定时调度器已启动 · 数据目录 {config.data_dir}")
+    for entry in entries:
+        click.echo(f"  - {entry.display_name()} ({entry.name})")
+    click.echo(f"当前启用的定时任务：{len(store.enabled_schedules())} 个")
+    try:
+        service.start()
+    except (KeyboardInterrupt, SystemExit):
+        service.shutdown()
 
 
 @main.group("user")

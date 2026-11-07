@@ -124,7 +124,45 @@ produces its own record and its own result row.
 - Queued items survive restarts because they live in SQLite. Every batch run is stored as a
   batch record, and **执行批次** keeps the history with per-item results.
 
-## 6. Uploads and output files
+## 6. Schedule commands
+
+Open any command, fill its form, then fill the **定时设置** (schedule settings) panel:
+
+1. **周期（Cron）** — a five-field expression (`minute hour day month weekday`), e.g. `0 2 * * *`,
+   or choose one of the presets.
+2. **单次** — one timestamp in `YYYY-MM-DD HH:MM:SS` form.
+3. **时区** — an IANA name, default `Asia/Shanghai`.
+4. Optionally enable **停机补跑** so a fire missed while the scheduler was down is run once at
+   startup.
+
+Press **预览未来 3 次触发** to confirm the plan, then **加入定时**. Creating a schedule does not
+execute the command immediately.
+
+### Scheduler process
+
+- **Development:** `cliui serve examples/demo_cli.py:cli --scheduler` starts the scheduler in a
+  background thread inside the web process.
+- **Production:** run it as its own process:
+
+  ```bash
+  cliui scheduler --data-dir data
+  ```
+
+  Omit the specs and the scheduler reuses the applications `cliui serve` registered in the
+  database; pass specs explicitly if you prefer:
+
+  ```bash
+  cliui scheduler examples/demo_cli.py:cli --data-dir data
+  ```
+
+- **定时任务** page lists next/last run, status, enable/pause, run-now and delete. Regular users
+  see only their own schedules; administrators see all.
+- Fires missed while the scheduler was stopped are marked `missed` by default. Enable **停机补跑**
+  per schedule to run once on the next start instead.
+- Each fire is claimed atomically in SQLite, so running the standalone scheduler next to the web
+  console never executes the same slot twice.
+
+## 7. Uploads and output files
 
 - `click.File(mode="r")` parameters render as file pickers. Files are uploaded to
   `<data-dir>/uploads` and passed to the command as a path.
@@ -133,13 +171,13 @@ produces its own record and its own result row.
 - `click.File(mode="w")` parameters are rendered as output paths; the command writes the file
   itself.
 
-## 7. Data and backups
+## 8. Data and backups
 
 Everything persistent is under the data directory (default `./data`):
 
 ```
 data/
-  cliui.sqlite3     # users, execution records, queue, batches
+  cliui.sqlite3     # users, execution records, queue, batches, schedules, app specs
   .secret_key       # generated Flask session key
   uploads/          # uploaded files
 ```
@@ -147,16 +185,49 @@ data/
 Back up the whole directory. Passing `--data-dir` (or `CLIUI_DATA_DIR`) lets you keep separate
 console state per environment.
 
-## 8. Deploying behind a proxy
+## 9. Deploying behind a proxy
 
 `cliui serve` uses Flask's development server, which is fine for a team tool on a trusted
 network but not for the open internet. For a production-ish setup:
 
 1. Configure an admin password through `CLIUI_ADMIN_PASSWORD` instead of passing it on the
    command line.
-2. Run the console under a process manager (systemd, Supervisor, Windows service wrapper).
+2. Run the console under a process manager (systemd, Supervisor, Windows service wrapper), and
+   run `cliui scheduler` as a second supervised process that shares the same `--data-dir`.
 3. Put it behind your SSO/VPN or a reverse proxy such as Nginx.
 4. Restrict the host account's permissions to exactly what the CLI needs.
+
+Example units:
+
+```ini
+# /etc/systemd/system/cliui-scheduler.service
+[Unit]
+Description=click-ui scheduler
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/click-ui
+ExecStart=/srv/click-ui/.venv/bin/cliui scheduler --data-dir /srv/cliui-data
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+On Windows, create an NSSM service with the same arguments:
+
+```powershell
+nssm install click-ui-scheduler "C:\click-ui\.venv\Scripts\cliui.exe" "scheduler --data-dir C:\cliui-data"
+nssm start click-ui-scheduler
+```
+
+With Docker, run the scheduler as a sidecar container that mounts the same data volume:
+
+```bash
+docker run -d --name cliui-scheduler \
+  -v /srv/cliui-data:/data \
+  click-ui:latest cliui scheduler --data-dir /data
+```
 
 If you prefer a WSGI server, wrap the app factory yourself:
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import typing as t
 
 from cliui.model import AppEntry, CommandInfo
+from cliui.scheduling import CRON_PRESETS, DEFAULT_TIMEZONE
 from cliui.schema.argv import build_form_defaults, collect_scopes, field_key
 from cliui.schema.fields import build_field
 
@@ -78,6 +79,12 @@ def build_command_form(
     data = build_form_defaults(node, scopes, initial_values)
     data["_cliui_app"] = app.name
     data["_cliui_command"] = node.node_id
+    data["trigger_type"] = "cron"
+    data["cron"] = ""
+    data["cron_preset"] = ""
+    data["run_at"] = ""
+    data["timezone"] = DEFAULT_TIMEZONE
+    data["catch_up"] = False
 
     body: t.List[t.Dict[str, t.Any]] = [
         {
@@ -156,6 +163,76 @@ def build_command_form(
     body.append(
         {
             "type": "panel",
+            "title": "定时设置（可选）",
+            "className": "cliui-schedule-panel",
+            "body": [
+                {
+                    "type": "alert",
+                    "level": "info",
+                    "showIcon": True,
+                    "body": "填写下面的计划后点击“加入定时”，命令会按 Cron 或单次时间自动执行。"
+                    "不填也可以正常“执行”或“加入队列”。",
+                },
+                {
+                    "type": "radios",
+                    "name": "trigger_type",
+                    "label": "触发方式",
+                    "options": [
+                        {"label": "周期（Cron）", "value": "cron"},
+                        {"label": "单次", "value": "once"},
+                    ],
+                },
+                {
+                    "type": "input-text",
+                    "name": "cron",
+                    "label": "Cron 表达式",
+                    "placeholder": "0 2 * * *",
+                    "description": "5 段：分 时 日 月 周；与下方“常用预设”二选一（都填时以这里为准）。",
+                },
+                {
+                    "type": "select",
+                    "name": "cron_preset",
+                    "label": "常用预设",
+                    "clearable": True,
+                    "options": [
+                        {"label": label, "value": expression}
+                        for label, expression in CRON_PRESETS
+                    ],
+                },
+                {
+                    "type": "input-text",
+                    "name": "run_at",
+                    "label": "单次时间",
+                    "placeholder": "2026-11-08 09:00:00",
+                    "description": "仅“单次”方式使用，格式 YYYY-MM-DD HH:MM:SS。",
+                },
+                {
+                    "type": "input-text",
+                    "name": "timezone",
+                    "label": "时区（IANA）",
+                    "placeholder": DEFAULT_TIMEZONE,
+                    "description": "默认 Asia/Shanghai。",
+                },
+                {
+                    "type": "switch",
+                    "name": "catch_up",
+                    "label": "停机补跑",
+                    "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
+                },
+                {
+                    "type": "action",
+                    "label": "预览未来 3 次触发",
+                    "level": "link",
+                    "actionType": "ajax",
+                    "api": {"method": "post", "url": "/api/schedules/preview"},
+                },
+            ],
+        }
+    )
+
+    body.append(
+        {
+            "type": "panel",
             "title": "执行结果",
             "className": "cliui-result-panel",
             "visibleOn": "this.result_status != null",
@@ -188,6 +265,13 @@ def build_command_form(
                 "level": "info",
                 "tooltip": "点击“加入队列”不会立即执行；可以在“记录队列”页中把多条命令批量执行。",
                 "api": {"method": "post", "url": "/api/queue"},
+            },
+            {
+                "type": "submit",
+                "label": "加入定时",
+                "level": "success",
+                "tooltip": "按上方“定时设置”创建定时任务；不会立即执行。可在“定时任务”页查看与启停。",
+                "api": {"method": "post", "url": "/api/schedules"},
             },
             {
                 "type": "submit",

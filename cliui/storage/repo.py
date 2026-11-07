@@ -151,6 +151,8 @@ class Store:
         duration_ms: int,
         batch_id: t.Optional[int] = None,
         batch_index: t.Optional[int] = None,
+        trigger: str = "manual",
+        schedule_id: t.Optional[int] = None,
     ) -> int:
         with self._db() as conn:
             cursor = conn.execute(
@@ -158,8 +160,8 @@ class Store:
                 INSERT INTO executions
                 (user_id, username, app, command_id, command_path, params_json, argv_json,
                  argv_label, status, exit_code, stdout, stderr, exception, duration_ms,
-                 batch_id, batch_index, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 batch_id, batch_index, trigger, schedule_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -178,6 +180,8 @@ class Store:
                     duration_ms,
                     batch_id,
                     batch_index,
+                    trigger,
+                    schedule_id,
                     now_str(),
                 ),
             )
@@ -198,6 +202,7 @@ class Store:
         command: t.Optional[str] = None,
         status: t.Optional[str] = None,
         username: t.Optional[str] = None,
+        trigger: t.Optional[str] = None,
     ) -> t.Tuple[t.List[t.Dict[str, t.Any]], int]:
         page = max(1, int(page))
         per_page = max(1, min(200, int(per_page)))
@@ -218,6 +223,9 @@ class Store:
         if username:
             where.append("username = ? COLLATE NOCASE")
             params.append(username)
+        if trigger:
+            where.append("trigger = ?")
+            params.append(trigger)
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         with self._db() as conn:
             total = conn.execute(f"SELECT COUNT(*) AS n FROM executions{clause}", params).fetchone()["n"]
@@ -396,3 +404,237 @@ class Store:
                 "SELECT * FROM executions WHERE batch_id = ? ORDER BY batch_index, id", (batch_id,)
             ).fetchall()
             return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------ app specs
+    def save_app_specs(self, specs: t.Sequence[t.Tuple[str, str, str]]) -> None:
+        """Remember which applications the console serves.
+
+        The standalone scheduler process has no command line of its own, so
+        ``serve`` publishes the registered specs here and the scheduler loads
+        them back by name.
+        """
+        timestamp = now_str()
+        names = [name for name, _spec, _cwd in specs]
+        with self._db() as conn:
+            for name, spec, base_cwd in specs:
+                conn.execute(
+                    """
+                    INSERT INTO app_specs (name, import_spec, base_cwd, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        import_spec = excluded.import_spec,
+                        base_cwd = excluded.base_cwd,
+                        updated_at = excluded.updated_at
+                    """,
+                    (name, spec, base_cwd or "", timestamp),
+                )
+            if names:
+                placeholders = ", ".join("?" for _ in names)
+                conn.execute(
+                    f"DELETE FROM app_specs WHERE name NOT IN ({placeholders})", names
+                )
+            else:
+                conn.execute("DELETE FROM app_specs")
+
+    def load_app_specs(self) -> t.List[t.Dict[str, t.Any]]:
+        with self._db() as conn:
+            rows = conn.execute("SELECT * FROM app_specs ORDER BY name").fetchall()
+            return [dict(row) for row in rows]
+
+    # ----------------------------------------------------------- schedules
+    def create_schedule(
+        self,
+        *,
+        app_name: str,
+        command_path: str,
+        argv: t.List[str],
+        params: t.Dict[str, t.Any],
+        argv_label: str,
+        cron: t.Optional[str],
+        run_at: t.Optional[str],
+        timezone: str,
+        catch_up: bool,
+        enabled: bool,
+        created_by: int,
+        created_by_name: str,
+        next_run_at: t.Optional[str],
+    ) -> int:
+        with self._db() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO schedules
+                (app_name, command_path, argv_json, params_json, argv_label, cron, run_at,
+                 timezone, catch_up, enabled, created_by, created_by_name, created_at,
+                 updated_at, next_run_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    app_name,
+                    command_path,
+                    json.dumps(argv, ensure_ascii=False),
+                    json.dumps(params, ensure_ascii=False),
+                    argv_label,
+                    cron,
+                    run_at,
+                    timezone,
+                    1 if catch_up else 0,
+                    1 if enabled else 0,
+                    created_by,
+                    created_by_name,
+                    now_str(),
+                    now_str(),
+                    next_run_at,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_schedule(self, schedule_id: int) -> t.Optional[t.Dict[str, t.Any]]:
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_schedules(
+        self,
+        *,
+        user_id: t.Optional[int],
+        page: int = 1,
+        per_page: int = 20,
+        app: t.Optional[str] = None,
+    ) -> t.Tuple[t.List[t.Dict[str, t.Any]], int]:
+        page = max(1, int(page))
+        per_page = max(1, min(200, int(per_page)))
+        where: t.List[str] = []
+        params: t.List[t.Any] = []
+        if user_id is not None:
+            where.append("created_by = ?")
+            params.append(user_id)
+        if app:
+            where.append("app_name = ?")
+            params.append(app)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        with self._db() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) AS n FROM schedules{clause}", params
+            ).fetchone()["n"]
+            rows = conn.execute(
+                f"SELECT * FROM schedules{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+                params + [per_page, (page - 1) * per_page],
+            ).fetchall()
+            return [dict(row) for row in rows], int(total)
+
+    def enabled_schedules(self) -> t.List[t.Dict[str, t.Any]]:
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedules WHERE enabled = 1 ORDER BY next_run_at, id"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def set_schedule_enabled(
+        self, schedule_id: int, enabled: bool, next_run_at: t.Optional[str]
+    ) -> bool:
+        with self._db() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE schedules SET enabled = ?, next_run_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (1 if enabled else 0, next_run_at, now_str(), schedule_id),
+            )
+            return cursor.rowcount > 0
+
+    def update_schedule_next_run(
+        self, schedule_id: int, next_run_at: t.Optional[str]
+    ) -> None:
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE schedules SET next_run_at = ?, updated_at = ? WHERE id = ?",
+                (next_run_at, now_str(), schedule_id),
+            )
+
+    def mark_schedule_missed(self, schedule_id: int, next_run_at: t.Optional[str]) -> None:
+        with self._db() as conn:
+            conn.execute(
+                """
+                UPDATE schedules SET last_status = 'missed', next_run_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (next_run_at, now_str(), schedule_id),
+            )
+
+    def delete_schedule(self, schedule_id: int) -> bool:
+        with self._db() as conn:
+            cursor = conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+            return cursor.rowcount > 0
+
+    def claim_schedule_run(
+        self,
+        schedule_id: int,
+        *,
+        expected_next_run_at: t.Optional[str],
+        next_run_at: t.Optional[str],
+        now: str,
+    ) -> bool:
+        """Atomically take ownership of one scheduled fire.
+
+        Only the writer whose ``expected_next_run_at`` still matches wins, so
+        two scheduler processes can never run the same fire twice.
+        """
+        with self._db() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE schedules SET last_run_at = ?, next_run_at = ?, updated_at = ?
+                WHERE id = ? AND enabled = 1 AND next_run_at IS ?
+                """,
+                (now, next_run_at, now_str(), schedule_id, expected_next_run_at),
+            )
+            return cursor.rowcount > 0
+
+    def mark_schedule_result(
+        self, schedule_id: int, *, status: str, execution_id: t.Optional[int]
+    ) -> None:
+        with self._db() as conn:
+            conn.execute(
+                """
+                UPDATE schedules SET last_status = ?, last_execution_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, execution_id, now_str(), schedule_id),
+            )
+
+    def finish_schedule_run(
+        self,
+        schedule_id: int,
+        *,
+        status: str,
+        execution_id: t.Optional[int],
+        next_run_at: t.Optional[str],
+        enabled: t.Optional[bool] = None,
+    ) -> None:
+        with self._db() as conn:
+            if enabled is None:
+                conn.execute(
+                    """
+                    UPDATE schedules SET last_status = ?, last_execution_id = ?,
+                        next_run_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, execution_id, next_run_at, now_str(), schedule_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE schedules SET last_status = ?, last_execution_id = ?,
+                        next_run_at = ?, enabled = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        status,
+                        execution_id,
+                        next_run_at,
+                        1 if enabled else 0,
+                        now_str(),
+                        schedule_id,
+                    ),
+                )

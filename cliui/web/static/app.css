@@ -686,3 +686,145 @@ body {
     min-width: 0;
   }
 }
+
+/* ---------------------------------------------------------------- overview */
+a.cliui-brand-mark {
+  text-decoration: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+a.cliui-brand-mark:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px -10px rgba(47, 107, 255, 0.95);
+}
+
+.cliui-overview-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 18px 0 4px;
+}
+
+.cliui-overview-app {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: var(--cliui-radius);
+  background: var(--cliui-card);
+  border: 1px solid var(--cliui-line);
+  box-shadow: 0 16px 40px -34px rgba(23, 32, 51, 0.55);
+}
+
+.cliui-overview-app-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.cliui-overview-app-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.cliui-overview-app-sub {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--cliui-muted);
+  line-height: 1.5;
+}
+
+.cliui-overview-app-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cliui-overview-open {
+  font-size: 13px;
+  color: var(--cliui-primary);
+  text-decoration: none;
+}
+
+.cliui-overview-open:hover {
+  text-decoration: underline;
+}
+
+.cliui-overview-list-head,
+.cliui-overview-item {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 110px minmax(240px, 1.2fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.cliui-overview-list-head {
+  padding: 8px 10px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--cliui-muted);
+  border-bottom: 1px solid var(--cliui-line);
+}
+
+.cliui-overview-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f4fa;
+  font-size: 13px;
+}
+
+.cliui-overview-item:last-child {
+  border-bottom: none;
+}
+
+.cliui-overview-item:hover {
+  background: #f7faff;
+}
+
+.cliui-overview-path {
+  font-family: var(--cliui-mono);
+  font-size: 13px;
+  color: var(--cliui-ink);
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.cliui-overview-path:hover {
+  color: var(--cliui-primary);
+  text-decoration: underline;
+}
+
+.cliui-overview-kind {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid #d9e4f7;
+  background: #fff;
+  color: #3b4a66;
+  white-space: nowrap;
+}
+
+.cliui-overview-kind.is-run {
+  border-color: #cfe8d9;
+  background: #f2fbf6;
+  color: #147a49;
+}
+
+.cliui-overview-kind.is-group {
+  border-color: #f2d9a8;
+  background: #fff8ec;
+  color: #8a5a12;
+}
+
+.cliui-overview-desc {
+  color: #4a5875;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.cliui-overview-empty {
+  padding: 18px 10px;
+  color: var(--cliui-muted);
+  font-size: 13px;
+}

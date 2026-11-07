@@ -11,7 +11,8 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
 
 `click-ui` 在运行时读取 Click 命令树，用 [AMIS](https://amis.baidu.com/) 渲染成控制台：
-左侧导航树、每个命令一张自动生成的表单、按执行人隔离的执行记录，以及可批量执行的命令队列。
+左侧导航树、每个命令一张自动生成的表单、按执行人隔离的执行记录、可批量执行的命令队列，
+以及跨平台的 Cron / 单次定时执行。
 
 ```bash
 pip install -e .
@@ -102,6 +103,21 @@ python examples/demo_cli.py text transform "hello world"
 - 队列保存在数据库中，刷新页面不会丢失。
 - 每次批量执行都会生成独立批次记录，可在“执行批次”页查看历史与逐项状态。
 
+**定时执行**
+
+- 在命令表单里填写“定时设置”：Cron（5 段）或单次时间，点击**加入定时**即可创建；
+  支持 IANA 时区（默认 `Asia/Shanghai`）、常用 Cron 预设与未来 3 次触发预览。
+- 生产环境用独立进程 `cliui scheduler --data-dir data`，开发环境用 `cliui serve --scheduler`
+  （同进程线程）；两种形态共用同一套调度逻辑与同一个 SQLite 数据库。
+- 调度器停机期间错过的触发默认记为 `missed`，可按任务开启“停机补跑一次”。
+- 每个触发通过 SQLite 原子抢占，多进程不会重复执行；执行记录标记来源“定时”并关联任务编号。
+- 普通用户只能管理自己创建的定时任务，管理员可以查看全部。
+
+**命令总览**
+
+- `/overview` 汇总所有已注册应用的命令树，每个命令附一句话说明；点击命令直接进入对应表单。
+- 点击左上角的 **CLI** 标记可随时回到命令总览。
+
 **多应用、多账号**
 
 - 一条命令可同时托管多个 Click 应用，用 `name=module:cli` 自定义显示名。
@@ -110,7 +126,7 @@ python examples/demo_cli.py text transform "hello world"
 
 ## 快速开始
 
-环境要求：Python 3.9+、Click 8.1+、Flask 3。
+环境要求：Python 3.9+、Click 8.1+、Flask 3、APScheduler 3.10+（Windows 时区依赖已随 `tzdata` 安装）。
 
 ```bash
 # 1. 在仓库根目录安装
@@ -205,6 +221,8 @@ flowchart LR
 | `--max-upload-mb` | `64` | 上传文件大小上限 |
 | `--debug/--no-debug` | 关闭 | Flask 调试模式 |
 | `--open/--no-open` | 关闭 | 启动后自动打开浏览器 |
+| `--scheduler/--no-scheduler` | 关闭 | 在 Web 进程内启动定时调度线程（开发推荐） |
+| `--scheduler-wait-seconds` | `0` | 定时触发等待执行锁的秒数，超时记录为 `skipped` |
 
 ### 环境变量
 
@@ -214,11 +232,26 @@ flowchart LR
 | `CLIUI_ADMIN_PASSWORD` | 初始管理员密码 |
 | `CLIUI_SECRET_KEY` | Flask 会话密钥 |
 
+### `cliui scheduler`
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SPEC...` | 可省略 | 省略时复用 `cliui serve` 保存在数据库里的应用 |
+| `--data-dir` | `./data` | 与 Web 控制台共用同一个数据目录 |
+| `--db-path` | `<data-dir>/cliui.sqlite3` | 自定义 SQLite 路径 |
+| `--max-output-chars` | `200000` | 单条输出最多保存的字符数 |
+| `--scheduler-wait-seconds` | `0` | 等待执行锁的秒数，超时记录为 `skipped` |
+
+`cliui scheduler` 与 Web 控制台可以同时运行：任务配置保存在 SQLite，触发时用
+`next_run_at` 做原子抢占，同一时刻只会有一个进程执行。生产环境推荐把调度器交给
+systemd、NSSM 或容器 sidecar 托管。
+
 ## 命令行参考
 
 ```bash
 cliui --version
 cliui serve [SPEC...] [options]      # 启动 Web 控制台
+cliui scheduler [SPEC...] [options]  # 启动独立定时调度进程
 cliui tree SPEC [--json]             # 查看命令树与节点 id
 cliui user add <用户名> [密码] [--admin] [--data-dir DIR]
 cliui user list [--data-dir DIR]
@@ -251,6 +284,8 @@ cli [cli]  (/path/to/examples)
   但密码值与其他参数一样会进入命令预览与执行记录。
 - `--admin-password` 可能出现在 shell 历史或进程列表中；服务器上建议使用自动生成的密码
   或 `CLIUI_ADMIN_PASSWORD`。
+- 定时任务以创建人的身份写入执行记录，但命令本身仍以服务进程的系统权限运行，请用只具备
+  必要权限的专用账号运行控制台与调度器。
 
 ## 参与开发
 
@@ -265,13 +300,14 @@ python -m pytest -q
 
 ```
 cliui/
-  cli.py            # cliui serve / tree / user
+  cli.py            # cliui serve / scheduler / tree / user
   config.py         # 运行时配置
   registry.py       # module:attr 加载
+  scheduling.py     # 定时调度（Web 线程与独立进程共用）
   introspect/       # Click → 命令树 / 参数元数据
   schema/           # 命令树 → AMIS JSON、argv 转换
   execute/          # 进程内 CliRunner 执行
-  storage/          # SQLite 用户、记录、队列、批次
+  storage/          # SQLite 用户、记录、队列、批次、定时任务
   web/              # Flask 应用、页面、路由、内置 AMIS 资源
 examples/           # 示例应用
 docs/               # 快速开始、架构说明、截图
