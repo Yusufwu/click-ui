@@ -6,8 +6,8 @@ read-only layer over Click, so contributions that preserve that property are esp
 ## Development setup
 
 ```bash
-git clone <repository-url>
-cd cli-ui-amis
+git clone https://github.com/Yusufwu/click-ui.git
+cd click-ui
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"

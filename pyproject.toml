@@ -38,6 +38,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
+[project.urls]
+Homepage = "https://github.com/Yusufwu/click-ui"
+Repository = "https://github.com/Yusufwu/click-ui"
+Issues = "https://github.com/Yusufwu/click-ui/issues"
 
 [project.scripts]
 cliui = "cliui.cli:main"
