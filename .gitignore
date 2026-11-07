@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+data/
+*.log
+.secret_key
+build/
+dist/
+*.egg-info/
+.idea/
+.DS_Store
+.coverage
+htmlcov/
+.env
+
+# local reference material, not part of the package
+_legacy/

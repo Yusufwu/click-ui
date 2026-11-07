@@ -1,0 +1,1 @@
+"""Flask + AMIS web console."""

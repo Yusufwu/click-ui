@@ -1,0 +1,688 @@
+:root {
+  --cliui-bg: #f2f5fb;
+  --cliui-card: #ffffff;
+  --cliui-ink: #172033;
+  --cliui-muted: #6b7484;
+  --cliui-line: #e3e8f1;
+  --cliui-primary: #2f6bff;
+  --cliui-primary-deep: #1e3f8f;
+  --cliui-success: #12a05c;
+  --cliui-danger: #d64545;
+  --cliui-warn: #c47a13;
+  --cliui-radius: 16px;
+  --cliui-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    Menlo, monospace;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 12% 0%, #e9f0ff 0, transparent 36%),
+    radial-gradient(circle at 95% 4%, #eef7f2 0, transparent 30%),
+    var(--cliui-bg);
+  color: var(--cliui-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ------------------------------------------------------------------ layout */
+.cliui-page > .cxd-Page-content,
+.cliui-page .cxd-Page-main {
+  background: transparent;
+}
+
+.cliui-page .cxd-Page-aside {
+  background: transparent;
+  padding: 16px 0 16px 16px;
+  box-sizing: border-box;
+}
+
+.cliui-page .cxd-Page-body {
+  padding: 16px 24px 40px 20px;
+  max-width: 1280px;
+}
+
+.cliui-page .cxd-Page-asideInner {
+  border: 1px solid var(--cliui-line);
+  border-radius: var(--cliui-radius);
+  background: var(--cliui-card);
+  box-shadow: 0 12px 30px -24px rgba(23, 32, 51, 0.5);
+  padding: 8px;
+  overflow: auto;
+}
+
+.cliui-wide-page .cxd-Page-body {
+  max-width: 1440px;
+}
+
+/* ------------------------------------------------------------------ topbar */
+.cliui-topbar-wrap {
+  margin-bottom: 16px;
+}
+
+.cliui-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  border: 1px solid var(--cliui-line);
+  border-radius: var(--cliui-radius);
+  background: linear-gradient(120deg, #ffffff 0%, #f7faff 100%);
+  box-shadow: 0 16px 40px -34px rgba(23, 32, 51, 0.55);
+}
+
+.cliui-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 210px;
+}
+
+.cliui-brand-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2f6bff, #1e3f8f);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  box-shadow: 0 8px 18px -10px rgba(47, 107, 255, 0.9);
+}
+
+.cliui-brand-title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.cliui-brand-sub {
+  font-size: 12px;
+  color: var(--cliui-muted);
+}
+
+.cliui-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cliui-top-link {
+  padding: 7px 12px;
+  border-radius: 10px;
+  color: #3c4658;
+  font-size: 13px;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.cliui-top-link:hover {
+  background: #eef3ff;
+  color: var(--cliui-primary-deep);
+}
+
+.cliui-top-link.is-active {
+  background: #e8f0ff;
+  border-color: #cddcff;
+  color: var(--cliui-primary-deep);
+  font-weight: 600;
+}
+
+.cliui-top-link.cliui-logout {
+  color: var(--cliui-muted);
+}
+
+.cliui-reload-btn {
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid #d5deee;
+  background: #ffffff;
+  color: #3c4658;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.cliui-reload-btn:hover {
+  background: #eef3ff;
+  border-color: #c6d7ff;
+  color: var(--cliui-primary-deep);
+}
+
+.cliui-reload-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cliui-user {
+  font-size: 12px;
+  color: var(--cliui-muted);
+  padding: 0 4px;
+}
+
+.cliui-admin-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #fff1d6;
+  color: #9a6200;
+  font-size: 11px;
+}
+
+.cliui-pill {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: var(--cliui-primary);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.cliui-app-switch {
+  display: flex;
+  gap: 6px;
+  padding: 3px;
+  border-radius: 12px;
+  background: #f2f5fb;
+  border: 1px solid var(--cliui-line);
+}
+
+.cliui-app-chip {
+  padding: 5px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  color: var(--cliui-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cliui-app-chip.is-active {
+  background: #fff;
+  color: var(--cliui-primary-deep);
+  font-weight: 600;
+  box-shadow: 0 2px 6px -3px rgba(23, 32, 51, 0.45);
+}
+
+/* --------------------------------------------------------------------- hero */
+.cliui-hero-wrap {
+  margin-bottom: 16px;
+}
+
+.cliui-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 24px 28px 22px;
+  border-radius: 20px;
+  color: var(--cliui-ink);
+  background: #eef4ff;
+  border: 1px solid #dce7fb;
+  box-shadow: 0 10px 26px -24px rgba(31, 63, 143, 0.45);
+}
+
+.cliui-hero-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 6px;
+}
+
+.cliui-breadcrumb {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.cliui-command-title {
+  margin: 0;
+  font-size: 27px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.cliui-command-subtitle {
+  font-size: 14px;
+  color: #4a5875;
+  max-width: 760px;
+  line-height: 1.55;
+}
+
+.cliui-meta-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.cliui-meta-chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #d9e4f7;
+  color: #3b4a66;
+  font-size: 12px;
+}
+
+.cliui-meta-chip.cliui-chip-warn {
+  background: #fff6e5;
+  border-color: #f2d9a8;
+  color: #8a5a12;
+}
+
+.cliui-meta-chip.cliui-chip-danger {
+  background: #fdeeee;
+  border-color: #f3caca;
+  color: #a83232;
+}
+
+.cliui-help {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e2e9f5;
+  color: #3f4c63;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+/* --------------------------------------------------------------- child cards */
+.cliui-children {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.cliui-child-card {
+  display: block;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--cliui-line);
+  background: var(--cliui-card);
+  text-decoration: none;
+  color: var(--cliui-ink);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.cliui-child-card:hover {
+  transform: translateY(-2px);
+  border-color: #c6d7ff;
+  box-shadow: 0 16px 30px -24px rgba(47, 107, 255, 0.7);
+}
+
+.cliui-child-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cliui-child-name {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.cliui-child-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eef3ff;
+  color: var(--cliui-primary-deep);
+  font-size: 11px;
+}
+
+.cliui-child-badge.cliui-chip-danger {
+  background: #ffecec;
+  color: #b23636;
+}
+
+.cliui-child-desc {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--cliui-muted);
+  min-height: 34px;
+}
+
+.cliui-child-path {
+  margin-top: 8px;
+  font-family: var(--cliui-mono);
+  font-size: 11px;
+  color: #97a2b5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------------- nav */
+.cliui-nav {
+  background: transparent;
+  padding: 4px;
+}
+
+.cliui-nav .cxd-Nav-item,
+.cliui-nav .cxd-Nav-subItem {
+  border-radius: 9px;
+}
+
+.cliui-nav .cxd-Nav-item.is-active,
+.cliui-nav .cxd-Nav-subItem.is-active,
+.cliui-nav .cxd-Nav-Menu-item.is-active {
+  background: #eaf1ff;
+  color: var(--cliui-primary-deep);
+  font-weight: 600;
+}
+
+.cliui-nav .cxd-Nav-itemText {
+  font-size: 13px;
+}
+
+.cliui-nav .cxd-Nav-search {
+  margin-bottom: 8px;
+}
+
+/* --------------------------------------------------------------------- forms */
+.cliui-fields-panel,
+.cliui-result-panel {
+  border-radius: var(--cliui-radius);
+  overflow: hidden;
+  margin-top: 14px;
+  box-shadow: 0 14px 40px -36px rgba(23, 32, 51, 0.7);
+}
+
+.cliui-result-panel {
+  border: 1px solid #d7e3f5;
+}
+
+.cliui-result-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 650;
+  background: #edf7f1;
+  color: #0d7d48;
+}
+
+.cliui-status-preview {
+  background: #edf2ff;
+  color: #2b53b8;
+}
+
+.cliui-status-failed {
+  background: #fff0f0;
+  color: #b33131;
+}
+
+.cliui-status-queued {
+  background: #fff8e6;
+  color: #966200;
+}
+
+.cliui-result-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(47, 107, 255, 0.12);
+}
+
+.cliui-status-success .cliui-result-dot {
+  box-shadow: 0 0 0 4px rgba(18, 160, 92, 0.14);
+}
+
+.cliui-result-meta {
+  margin: 12px 0 4px;
+}
+
+.cliui-record-link {
+  margin: 8px 0;
+}
+
+.cliui-record-link a {
+  color: var(--cliui-primary);
+  font-size: 13px;
+}
+
+.cxd-Textarea textarea,
+.cxd-Textarea textarea:focus {
+  font-family: var(--cliui-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: #fbfcff;
+}
+
+/* --------------------------------------------------------------- detail view */
+.cliui-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.cliui-detail-item {
+  font-size: 12.5px;
+  color: var(--cliui-muted);
+}
+
+.cliui-detail-item b {
+  color: var(--cliui-ink);
+  font-weight: 650;
+}
+
+.cliui-detail-path {
+  font-family: var(--cliui-mono);
+  font-size: 13px;
+  color: #3f4a5f;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #f5f8fe;
+  border: 1px solid var(--cliui-line);
+}
+
+.cliui-output-title {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cliui-muted);
+}
+
+.cliui-output {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #101828;
+  color: #dfe8f5;
+  font-family: var(--cliui-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.cliui-output-text .cxd-Form-static {
+  font-family: var(--cliui-mono);
+}
+
+.cliui-output-field .cxd-Form-label {
+  margin-bottom: 6px;
+  color: var(--cliui-muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.cliui-output-field .cxd-PlainField {
+  display: block;
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #101828;
+  color: #dfe8f5;
+  font-family: var(--cliui-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+}
+
+/* -------------------------------------------------------------------- login */
+.cliui-login-body {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.cliui-login-card {
+  width: min(420px, 100%);
+  padding: 34px 32px 30px;
+  border-radius: 22px;
+  background: #fff;
+  border: 1px solid var(--cliui-line);
+  box-shadow: 0 30px 60px -40px rgba(23, 32, 51, 0.7);
+}
+
+.cliui-login-mark {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #2f6bff, #1e3f8f);
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  margin-bottom: 18px;
+}
+
+.cliui-login-card h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+.cliui-login-card p {
+  margin: 0 0 18px;
+  color: var(--cliui-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cliui-login-field {
+  margin-bottom: 14px;
+}
+
+.cliui-login-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #3d4759;
+}
+
+.cliui-login-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 13px;
+  border-radius: 11px;
+  border: 1px solid #d8dfeb;
+  background: #fbfcff;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cliui-login-field input:focus {
+  border-color: #8fb0ff;
+  box-shadow: 0 0 0 4px rgba(47, 107, 255, 0.12);
+}
+
+.cliui-login-submit {
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #2f6bff, #2456d6);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: 0 14px 24px -16px rgba(47, 107, 255, 0.9);
+}
+
+.cliui-login-submit:hover {
+  filter: brightness(1.04);
+}
+
+.cliui-login-error {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff0f0;
+  border: 1px solid #ffd4d4;
+  color: #b33131;
+  font-size: 13px;
+}
+
+.cliui-login-note {
+  margin-top: 16px;
+  font-size: 12px;
+  color: #97a2b5;
+  line-height: 1.6;
+}
+
+/* ----------------------------------------------------------------- responsive */
+@media (max-width: 860px) {
+  .cliui-page .cxd-Page-aside {
+    padding: 10px 10px 0;
+  }
+
+  .cliui-page .cxd-Page-body {
+    padding: 12px 12px 32px;
+  }
+
+  .cliui-hero {
+    padding: 20px;
+    border-radius: 16px;
+  }
+
+  .cliui-command-title {
+    font-size: 22px;
+  }
+
+  .cliui-brand {
+    min-width: 0;
+  }
+}

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='amis/sdk.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='amis/helper.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='amis/iconfont.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+</head>
+<body>
+  <div id="root"></div>
+  <script id="cliui-page" type="application/json">{{ page_json | safe }}</script>
+  <script src="{{ url_for('static', filename='amis/sdk.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

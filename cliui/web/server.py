@@ -1,0 +1,785 @@
+"""Flask application factory: pages, APIs, authentication and execution."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import typing as t
+import uuid
+from datetime import timedelta
+from pathlib import Path
+
+from flask import (
+    Flask,
+    Response,
+    abort,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+
+from cliui.config import ServeConfig
+from cliui.execute.runner import ExecutionResult, execute_command
+from cliui.model import AppEntry, CommandInfo
+from cliui.registry import AppLoadError, reload_app_entry
+from cliui.schema.argv import argv_preview, parse_command
+from cliui.storage.repo import Store, summarize_params
+from cliui.web.auth import api_login_required, load_user, login_required
+from cliui.web.pages import (
+    build_batch_detail_page,
+    build_batches_page,
+    build_error_page,
+    build_index_page,
+    build_queue_page,
+    build_record_detail_page,
+    build_records_page,
+)
+
+
+MAX_PAGE_SIZE = 200
+
+
+def _json_script(payload: t.Any) -> str:
+    text = json.dumps(payload, ensure_ascii=False)
+    # ``<\/`` is a valid JSON escape and cannot break out of the script tag.
+    return text.replace("</", "<\\/")
+
+
+def _int_arg(name: str, default: int, maximum: int = MAX_PAGE_SIZE) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(maximum, value))
+
+
+def _payload() -> t.Dict[str, t.Any]:
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        return data
+    if request.form:
+        return {key: value for key, value in request.form.items()}
+    return {}
+
+
+def _safe_filename(name: str) -> str:
+    base = os.path.basename((name or "upload.bin").replace("\\", "/"))
+    base = re.sub(r"[^\w.\- ()\[\]]+", "_", base, flags=re.UNICODE)
+    base = base.strip(" .")
+    return base or "upload.bin"
+
+
+def _command_label(node: CommandInfo) -> str:
+    return node.display_path()
+
+
+def _exception_for_storage(result: ExecutionResult) -> str:
+    if result.exception:
+        return result.exception
+    if result.status == "failed":
+        return result.message
+    return ""
+
+
+def _status_payload(
+    *,
+    ok: bool,
+    msg: str = "",
+    data: t.Optional[t.Dict[str, t.Any]] = None,
+    errors: t.Optional[t.Dict[str, str]] = None,
+    http_status: int = 200,
+) -> Response:
+    body: t.Dict[str, t.Any] = {"status": 0 if ok else 1, "msg": msg}
+    if data is not None:
+        body["data"] = data
+    if errors:
+        body["status"] = 422
+        body["errors"] = errors
+    return jsonify(body), http_status
+
+
+def create_app(
+    *,
+    entries: t.List[AppEntry],
+    store: Store,
+    config: ServeConfig,
+    secret_key: t.Optional[str] = None,
+) -> Flask:
+    app = Flask(
+        __name__,
+        template_folder="templates",
+        static_folder="static",
+        static_url_path="/static",
+    )
+    app.secret_key = secret_key or config.secret_key
+    app.config.update(
+        MAX_CONTENT_LENGTH=config.max_upload_bytes,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_NAME="cliui_session",
+        PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+    )
+
+    apps_by_name: t.Dict[str, AppEntry] = {entry.name: entry for entry in entries}
+
+    app.before_request(load_user(store))
+
+    # ------------------------------------------------------------------ helpers
+    def current_user() -> t.Dict[str, t.Any]:
+        return g.user
+
+    def queue_count() -> int:
+        user = g.user
+        return store.queue_count(user["id"]) if user else 0
+
+    def pick_app(name: t.Optional[str]) -> t.Optional[AppEntry]:
+        if name:
+            return apps_by_name.get(name)
+        return entries[0] if entries else None
+
+    def render_page(page: t.Dict[str, t.Any], title: str = "Click UI") -> str:
+        return render_template(
+            "index.html", page_json=_json_script(page), title=title
+        )
+
+    def page_error(
+        message: str,
+        *,
+        status: int = 404,
+        entry: t.Optional[AppEntry] = None,
+        http_status: t.Optional[int] = None,
+    ) -> t.Tuple[str, int]:
+        page = build_error_page(
+            entries,
+            entry,
+            current_user(),
+            queue_count(),
+            message,
+            status,
+        )
+        return render_page(page, f"{status} · {message}"), http_status or status
+
+    def api_error(message: str, http_status: int = 400) -> Response:
+        return _status_payload(ok=False, msg=message, http_status=http_status)
+
+    def entry_for(data: t.Dict[str, t.Any]) -> t.Optional[AppEntry]:
+        return pick_app(str(data.get("_cliui_app") or ""))
+
+    def node_for(
+        entry: AppEntry, data: t.Dict[str, t.Any]
+    ) -> t.Optional[CommandInfo]:
+        node_id = str(data.get("_cliui_command") or "")
+        if not node_id:
+            return None
+        return entry.resolve(node_id)
+
+    def parsed_for(
+        entry: AppEntry, node: CommandInfo, data: t.Dict[str, t.Any]
+    ) -> t.Any:
+        return parse_command(node, data, cwd=entry.cwd)
+
+    def result_fields_for_app(
+        entry: AppEntry,
+        result: ExecutionResult,
+        node: CommandInfo,
+        record_id: t.Optional[int] = None,
+    ) -> t.Dict[str, t.Any]:
+        root_name = entry.root.name if entry.root else entry.name
+        return result.to_fields(
+            command_label=_command_label(node),
+            argv_label=argv_preview(root_name, result.argv),
+            record_id=record_id,
+        )
+
+    def save_execution(
+        entry: AppEntry,
+        node: CommandInfo,
+        field_values: t.Dict[str, t.Any],
+        result: ExecutionResult,
+        *,
+        batch_id: t.Optional[int] = None,
+        batch_index: t.Optional[int] = None,
+    ) -> int:
+        root_name = entry.root.name if entry.root else entry.name
+        return store.record_execution(
+            user_id=g.user["id"],
+            username=g.user["username"],
+            app=entry.name,
+            command_id=node.node_id,
+            command_path=_command_label(node),
+            params=field_values,
+            argv=result.argv,
+            argv_label=argv_preview(root_name, result.argv),
+            status=result.status,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exception=_exception_for_storage(result),
+            duration_ms=result.duration_ms,
+            batch_id=batch_id,
+            batch_index=batch_index,
+        )
+
+    def require_owned(row: t.Dict[str, t.Any]) -> None:
+        if not g.user.get("is_admin") and row["user_id"] != g.user["id"]:
+            abort(403)
+
+    # -------------------------------------------------------------------- auth
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        error = ""
+        next_url = request.values.get("next", "/")
+        next_url = next_url if next_url.startswith("/") and not next_url.startswith("//") else "/"
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            user = store.authenticate(username, password) if username else None
+            if user is None:
+                error = "用户名或密码不正确"
+            else:
+                session.clear()
+                session["user_id"] = int(user["id"])
+                session.permanent = True
+                return redirect(next_url)
+        if g.user is not None and request.method == "GET":
+            return redirect("/")
+        return render_template(
+            "login.html",
+            error=error,
+            next_url=next_url,
+            has_users=store.count_users() > 0,
+        )
+
+    @app.get("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
+
+    # ------------------------------------------------------------------- pages
+    @app.get("/")
+    @login_required
+    def index():
+        entry = pick_app(request.args.get("app"))
+        if entry is None:
+            return page_error("还没有注册任何 Click 应用。", status=500, http_status=500)
+
+        selected = entry.resolve(request.args.get("cmd"))
+        initial_values: t.Optional[t.Dict[str, t.Any]] = None
+
+        record_id = request.args.get("record")
+        if record_id:
+            try:
+                record = store.get_execution(int(record_id))
+            except ValueError:
+                record = None
+            if record is None:
+                return page_error("执行记录不存在", status=404, entry=entry)
+            require_owned(record)
+            try:
+                initial_values = json.loads(record["params_json"] or "{}")
+            except json.JSONDecodeError:
+                initial_values = {}
+            entry = pick_app(record["app"]) or entry
+            selected = entry.resolve(record["command_id"])
+
+        queue_item = request.args.get("queue_item")
+        if queue_item:
+            try:
+                item = store.get_queue_item(int(queue_item), g.user["id"])
+            except ValueError:
+                item = None
+            if item is None:
+                return page_error("队列项不存在", status=404, entry=entry)
+            try:
+                initial_values = json.loads(item["params_json"] or "{}")
+            except json.JSONDecodeError:
+                initial_values = {}
+            entry = pick_app(item["app"]) or entry
+            selected = entry.resolve(item["command_id"])
+
+        if request.args.get("cmd") and selected is None:
+            return page_error("命令不存在或尚未注册", status=404, entry=entry)
+
+        page = build_index_page(
+            entry,
+            entries,
+            g.user,
+            queue_count(),
+            selected,
+            initial_values,
+        )
+        return render_page(page, f"{entry.display_name()} · 控制台")
+
+    @app.get("/records")
+    @login_required
+    def records_page():
+        entry = pick_app(request.args.get("app"))
+        page = build_records_page(entries, entry, g.user, queue_count())
+        return render_page(page, "执行记录")
+
+    @app.get("/records/<int:record_id>")
+    @login_required
+    def record_detail(record_id: int):
+        record = store.get_execution(record_id)
+        if record is None:
+            return page_error("执行记录不存在", status=404)
+        require_owned(record)
+        entry = pick_app(record["app"])
+        page = build_record_detail_page(record, entries, entry, g.user, queue_count())
+        return render_page(page, f"执行记录 #{record_id}")
+
+    @app.get("/queue")
+    @login_required
+    def queue_page():
+        entry = pick_app(request.args.get("app"))
+        page = build_queue_page(entries, entry, g.user, queue_count())
+        return render_page(page, "记录队列")
+
+    @app.get("/batches")
+    @login_required
+    def batches_page():
+        entry = pick_app(request.args.get("app"))
+        page = build_batches_page(entries, entry, g.user, queue_count())
+        return render_page(page, "执行批次")
+
+    @app.get("/batches/")
+    @login_required
+    def latest_batch():
+        rows, _total = store.list_batches(
+            user_id=None if g.user.get("is_admin") else g.user["id"],
+            page=1,
+            per_page=1,
+        )
+        if rows:
+            return redirect(f"/batches/{rows[0]['id']}")
+        return redirect("/batches")
+
+    @app.get("/batches/<int:batch_id>")
+    @login_required
+    def batch_detail(batch_id: int):
+        batch = store.get_batch(batch_id)
+        if batch is None:
+            return page_error("执行批次不存在", status=404)
+        require_owned(batch)
+        items = store.batch_executions(batch_id)
+        entry = pick_app(batch["app"])
+        page = build_batch_detail_page(
+            batch, items, entries, entry, g.user, queue_count()
+        )
+        return render_page(page, f"执行批次 #{batch_id}")
+
+    # --------------------------------------------------------------------- APIs
+    @app.post("/api/preview")
+    @api_login_required
+    def api_preview():
+        data = _payload()
+        entry = entry_for(data)
+        if entry is None:
+            return api_error("应用不存在", 404)
+        node = node_for(entry, data)
+        if node is None:
+            return api_error("命令不存在", 404)
+        parsed = parsed_for(entry, node, data)
+        if parsed.errors:
+            return _status_payload(
+                ok=False,
+                msg="表单校验未通过",
+                errors=parsed.errors,
+                http_status=200,
+            )
+        root_name = entry.root.name if entry.root else entry.name
+        preview = ExecutionResult(
+            status="preview",
+            exit_code=None,
+            stdout="",
+            stderr="",
+            exception="",
+            duration_ms=0,
+            argv=parsed.argv,
+            message="参数已通过校验，命令尚未执行。",
+        )
+        return _status_payload(
+            ok=True,
+            msg="命令预览",
+            data=result_fields_for_app(entry, preview, node),
+        )
+
+    @app.post("/api/execute")
+    @api_login_required
+    def api_execute():
+        data = _payload()
+        entry = entry_for(data)
+        if entry is None:
+            return api_error("应用不存在", 404)
+        node = node_for(entry, data)
+        if node is None:
+            return api_error("命令不存在", 404)
+        parsed = parsed_for(entry, node, data)
+        if parsed.errors:
+            return _status_payload(
+                ok=False,
+                msg="表单校验未通过",
+                errors=parsed.errors,
+                http_status=200,
+            )
+
+        result = execute_command(
+            entry, parsed.argv, max_output_chars=config.max_output_chars
+        )
+        record_id = save_execution(entry, node, parsed.field_values, result)
+        msg = "执行完成" if result.status == "success" else "执行结束（失败）"
+        return _status_payload(
+            ok=True,
+            msg=msg,
+            data=result_fields_for_app(entry, result, node, record_id),
+        )
+
+    @app.get("/api/records")
+    @api_login_required
+    def api_records():
+        page = _int_arg("page", 1)
+        per_page = _int_arg("perPage", 20)
+        status = request.args.get("status") or None
+        command = request.args.get("command") or None
+        app_name = request.args.get("app") or None
+        username = request.args.get("username") or None
+        admin = bool(g.user.get("is_admin"))
+        if not admin:
+            username = None
+        items, total = store.list_executions(
+            user_id=None if admin else g.user["id"],
+            page=page,
+            per_page=per_page,
+            app=app_name,
+            command=command,
+            status=status,
+            username=username,
+        )
+        for item in items:
+            item.pop("stdout", None)
+            item.pop("stderr", None)
+            item.pop("exception", None)
+            item.pop("params_json", None)
+        return jsonify({"status": 0, "msg": "", "data": {"items": items, "total": total}})
+
+    @app.get("/api/batches")
+    @api_login_required
+    def api_batches():
+        page = _int_arg("page", 1)
+        per_page = _int_arg("perPage", 20)
+        admin = bool(g.user.get("is_admin"))
+        items, total = store.list_batches(
+            user_id=None if admin else g.user["id"],
+            page=page,
+            per_page=per_page,
+        )
+        return jsonify({"status": 0, "msg": "", "data": {"items": items, "total": total}})
+
+    @app.get("/api/queue")
+    @api_login_required
+    def api_queue_list():
+        page = _int_arg("page", 1)
+        per_page = _int_arg("perPage", 20)
+        items, total = store.list_queue(
+            user_id=g.user["id"], page=page, per_page=per_page
+        )
+        return jsonify({"status": 0, "msg": "", "data": {"items": items, "total": total}})
+
+    @app.post("/api/queue")
+    @api_login_required
+    def api_queue_add():
+        data = _payload()
+        entry = entry_for(data)
+        if entry is None:
+            return api_error("应用不存在", 404)
+        node = node_for(entry, data)
+        if node is None:
+            return api_error("命令不存在", 404)
+        parsed = parsed_for(entry, node, data)
+        if parsed.errors:
+            return _status_payload(
+                ok=False, msg="表单校验未通过", errors=parsed.errors
+            )
+        root_name = entry.root.name if entry.root else entry.name
+        params_label = summarize_params(parsed.field_values)
+        argv_label = argv_preview(root_name, parsed.argv)
+        item_id = store.add_queue_item(
+            user_id=g.user["id"],
+            username=g.user["username"],
+            app=entry.name,
+            command_id=node.node_id,
+            command_path=_command_label(node),
+            params=parsed.field_values,
+            argv=parsed.argv,
+            params_label=params_label,
+            argv_label=argv_label,
+        )
+        count = store.queue_count(g.user["id"])
+        queued = ExecutionResult(
+            status="queued",
+            exit_code=None,
+            stdout="",
+            stderr="",
+            exception="",
+            duration_ms=0,
+            argv=parsed.argv,
+            message=f"已加入记录队列（第 {count} 项），可以继续添加或前往“记录队列”批量执行。",
+        )
+        fields = result_fields_for_app(entry, queued, node)
+        fields["queue_count"] = count
+        fields["queue_item_id"] = item_id
+        return _status_payload(ok=True, msg="已加入队列", data=fields)
+
+    @app.delete("/api/queue")
+    @api_login_required
+    def api_queue_clear():
+        removed = store.clear_queue(g.user["id"])
+        return _status_payload(ok=True, msg=f"已清空 {removed} 项", data={"queue_count": 0})
+
+    @app.delete("/api/queue/<int:item_id>")
+    @api_login_required
+    def api_queue_delete(item_id: int):
+        if not store.delete_queue_item(item_id, g.user["id"]):
+            return api_error("队列项不存在", 404)
+        return _status_payload(
+            ok=True,
+            msg="已删除",
+            data={"queue_count": store.queue_count(g.user["id"])},
+        )
+
+    @app.post("/api/queue/<int:item_id>/move")
+    @api_login_required
+    def api_queue_move(item_id: int):
+        direction = request.args.get("direction", "up")
+        if direction not in ("up", "down"):
+            return api_error("direction 只能是 up 或 down")
+        if not store.move_queue_item(item_id, g.user["id"], direction):
+            return api_error("无法移动（已到边界或队列项不存在）", 400)
+        return _status_payload(ok=True, msg="已调整顺序")
+
+    @app.post("/api/batch/run")
+    @api_login_required
+    def api_batch_run():
+        items = store.queue_items(g.user["id"])
+        if not items:
+            return api_error("记录队列为空，无法批量执行")
+        batch_id = store.create_batch(
+            user_id=g.user["id"],
+            username=g.user["username"],
+            app=items[0]["app"],
+            status="running",
+            title=f"队列批量执行（{len(items)} 项）",
+        )
+        succeeded = 0
+        failed = 0
+        for index, item in enumerate(items, start=1):
+            try:
+                argv = json.loads(item["argv_json"] or "[]")
+                if not isinstance(argv, list):
+                    argv = []
+            except json.JSONDecodeError:
+                argv = []
+            try:
+                params = json.loads(item["params_json"] or "{}")
+                if not isinstance(params, dict):
+                    params = {}
+            except json.JSONDecodeError:
+                params = {}
+
+            entry = apps_by_name.get(item["app"])
+            node = entry.resolve(item["command_id"]) if entry else None
+
+            if entry is None:
+                failed += 1
+                store.record_execution(
+                    user_id=g.user["id"],
+                    username=g.user["username"],
+                    app=item["app"],
+                    command_id=item["command_id"],
+                    command_path=item["command_path"],
+                    params=params,
+                    argv=argv,
+                    argv_label=item["argv_label"],
+                    status="failed",
+                    exit_code=None,
+                    stdout="",
+                    stderr="",
+                    exception=f"应用未注册或已被移除: {item['app']}",
+                    duration_ms=0,
+                    batch_id=batch_id,
+                    batch_index=index,
+                )
+                continue
+
+            try:
+                result = execute_command(
+                    entry, argv, max_output_chars=config.max_output_chars
+                )
+                if result.status == "success":
+                    succeeded += 1
+                else:
+                    failed += 1
+                if node is None:
+                    # The stored argv still runs; only rerun links lose their
+                    # command identity.
+                    store.record_execution(
+                        user_id=g.user["id"],
+                        username=g.user["username"],
+                        app=entry.name,
+                        command_id=item["command_id"],
+                        command_path=item["command_path"],
+                        params=params,
+                        argv=result.argv,
+                        argv_label=item["argv_label"],
+                        status=result.status,
+                        exit_code=result.exit_code,
+                        stdout=result.stdout,
+                        stderr=result.stderr,
+                        exception=_exception_for_storage(result),
+                        duration_ms=result.duration_ms,
+                        batch_id=batch_id,
+                        batch_index=index,
+                    )
+                else:
+                    save_execution(
+                        entry,
+                        node,
+                        params,
+                        result,
+                        batch_id=batch_id,
+                        batch_index=index,
+                    )
+            except Exception as exc:  # noqa: BLE001 - a batch item must not stop the batch
+                failed += 1
+                store.record_execution(
+                    user_id=g.user["id"],
+                    username=g.user["username"],
+                    app=item["app"],
+                    command_id=item["command_id"],
+                    command_path=item["command_path"],
+                    params=params,
+                    argv=argv,
+                    argv_label=item["argv_label"],
+                    status="failed",
+                    exit_code=None,
+                    stdout="",
+                    stderr="",
+                    exception=f"{type(exc).__name__}: {exc}",
+                    duration_ms=0,
+                    batch_id=batch_id,
+                    batch_index=index,
+                )
+
+        total = len(items)
+        store.update_batch(
+            batch_id,
+            status="success" if failed == 0 else "failed",
+            total=total,
+            succeeded=succeeded,
+            failed=failed,
+        )
+        store.clear_queue(g.user["id"])
+        return _status_payload(
+            ok=True,
+            msg=f"批量执行完成：成功 {succeeded}，失败 {failed}",
+            data={
+                "batch_id": batch_id,
+                "total": total,
+                "succeeded": succeeded,
+                "failed": failed,
+                "queue_count": 0,
+            },
+        )
+
+    @app.post("/api/reload")
+    @api_login_required
+    def api_reload():
+        if not g.user.get("is_admin"):
+            return _status_payload(
+                ok=False, msg="只有管理员可以重新加载应用", http_status=403
+            )
+        try:
+            fresh = [reload_app_entry(entry) for entry in entries]
+        except AppLoadError as exc:
+            return _status_payload(
+                ok=False, msg=f"重新加载失败：{exc}", http_status=400
+            )
+        # Mutate the shared list/dict in place so every closure keeps seeing
+        # the newest entries without rebuilding the Flask app.
+        entries[:] = fresh
+        apps_by_name.clear()
+        apps_by_name.update({entry.name: entry for entry in entries})
+        return _status_payload(
+            ok=True,
+            msg=f"已重新加载 {len(entries)} 个 Click 应用",
+            data={
+                "apps": [
+                    {
+                        "name": entry.name,
+                        "display_name": entry.display_name(),
+                        "nodes": len(entry.nodes),
+                        "commands": len(entry.executable_nodes()),
+                    }
+                    for entry in entries
+                ]
+            },
+        )
+
+    @app.post("/api/upload")
+    @api_login_required
+    def api_upload():
+        upload = request.files.get("file")
+        if upload is None and request.files:
+            upload = next(iter(request.files.values()))
+        if upload is None or not upload.filename:
+            return api_error("没有收到文件")
+        original = upload.filename
+        filename = _safe_filename(original)
+        stored = f"{uuid.uuid4().hex}_{filename}"
+        target = Path(config.upload_dir) / stored
+        upload.save(str(target))
+        return _status_payload(
+            ok=True,
+            msg="上传成功",
+            data={
+                "value": str(target.resolve()),
+                "filename": original,
+                "url": f"/uploads/{stored}",
+            },
+        )
+
+    # ------------------------------------------------------------ error pages
+    @app.errorhandler(403)
+    def handle_403(_error):
+        if request.path.startswith("/api/"):
+            return _status_payload(ok=False, msg="没有权限访问该资源", http_status=403)
+        return page_error("没有权限访问该资源", status=403)
+
+    @app.errorhandler(404)
+    def handle_404(_error):
+        if request.path.startswith("/api/"):
+            return _status_payload(ok=False, msg="接口不存在", http_status=404)
+        return page_error("页面不存在", status=404)
+
+    @app.errorhandler(413)
+    def handle_413(_error):
+        if request.path.startswith("/api/"):
+            return _status_payload(ok=False, msg="上传文件超过大小限制", http_status=413)
+        return page_error("上传文件超过大小限制", status=413, http_status=413)
+
+    @app.errorhandler(500)
+    def handle_500(error):
+        app.logger.exception("unhandled error", exc_info=error)
+        if request.path.startswith("/api/"):
+            return _status_payload(ok=False, msg="服务器内部错误", http_status=500)
+        try:
+            return page_error("服务器内部错误", status=500, http_status=500)
+        except Exception:
+            return "服务器内部错误", 500
+
+    return app

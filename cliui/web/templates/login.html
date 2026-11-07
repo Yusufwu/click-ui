@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · Click UI</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+</head>
+<body class="cliui-login-body">
+  <div class="cliui-login-card">
+    <div class="cliui-login-mark">CLI</div>
+    <h1>登录控制台</h1>
+    <p>Click → AMIS 控制台。请使用已注册的账号登录；所有执行结果按账号隔离保存。</p>
+
+    {% if error %}
+    <div class="cliui-login-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="next" value="{{ next_url }}" />
+      <div class="cliui-login-field">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" autocomplete="username" autofocus required />
+      </div>
+      <div class="cliui-login-field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+      </div>
+      <button class="cliui-login-submit" type="submit">登录</button>
+    </form>
+
+    {% if not has_users %}
+    <div class="cliui-login-note">
+      当前还没有任何账号。请先在命令行执行 <code>cliui user add &lt;用户名&gt; &lt;密码&gt; --admin</code>。
+    </div>
+    {% else %}
+    <div class="cliui-login-note">
+      账号由命令行工具创建：<code>cliui user add &lt;用户名&gt; &lt;密码&gt;</code>。
+    </div>
+    {% endif %}
+  </div>
+</body>
+</html>
