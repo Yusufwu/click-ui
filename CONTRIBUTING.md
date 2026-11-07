@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking the time to improve `cli-ui-amis`. This project aims to stay a thin,
+Thanks for taking the time to improve `click-ui`. This project aims to stay a thin,
 read-only layer over Click, so contributions that preserve that property are especially welcome.
 
 ## Development setup

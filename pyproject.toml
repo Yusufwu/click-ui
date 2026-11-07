@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cli-ui-amis"
+name = "click-ui"
 version = "0.1.0"
 description = "Turn existing Click CLI applications into an AMIS web console without touching Click."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-authors = [{ name = "cli-ui-amis contributors" }]
+authors = [{ name = "click-ui contributors" }]
 keywords = ["click", "cli", "amis", "flask", "web-ui", "admin", "console", "low-code"]
 classifiers = [
   "Development Status :: 4 - Beta",

@@ -1,6 +1,6 @@
 # Third-party notices
 
-`cli-ui-amis` is distributed under the Apache License 2.0 (see `LICENSE`). It depends on and
+`click-ui` is distributed under the Apache License 2.0 (see `LICENSE`). It depends on and
 bundles the following third-party components. Their licenses apply to those components only.
 
 ## Bundled assets

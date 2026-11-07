@@ -1,4 +1,4 @@
-"""The smallest useful Click app that cli-ui-amis can serve.
+"""The smallest useful Click app that click-ui can serve.
 
 Run it directly::
 

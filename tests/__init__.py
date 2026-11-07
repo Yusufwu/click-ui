@@ -1,1 +1,1 @@
-"""Test-suite for cli-ui-amis."""
+"""Test-suite for click-ui."""

@@ -1,4 +1,6 @@
-# cli-ui-amis
+# click-ui
+
+**English documentation:** [README.md](README.md)
 
 **不改一行 Click 代码，把任意 Click CLI 变成专业的 Web 控制台。**
 
@@ -8,7 +10,7 @@
 [![Flask 3](https://img.shields.io/badge/Flask-3.x-000000)](https://flask.palletsprojects.com/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
 
-`cli-ui-amis` 在运行时读取 Click 命令树，用 [AMIS](https://amis.baidu.com/) 渲染成控制台：
+`click-ui` 在运行时读取 Click 命令树，用 [AMIS](https://amis.baidu.com/) 渲染成控制台：
 左侧导航树、每个命令一张自动生成的表单、按执行人隔离的执行记录，以及可批量执行的命令队列。
 
 ```bash
@@ -22,7 +24,7 @@ cliui serve examples/demo_cli.py:cli
 python examples/demo_cli.py text transform "hello world"
 ```
 
-![cli-ui-amis 控制台](docs/images/form.png)
+![click-ui 控制台](docs/images/form.png)
 
 ---
 
@@ -48,7 +50,7 @@ python examples/demo_cli.py text transform "hello world"
 内部 CLI 往往是交付运维能力最快的方式，却也是最难共享的方式：运维、测试、客服、产品
 不可能都去终端里敲 `--region prod --dry-run`，而每加一个脚本就写一套后台页面也不现实。
 
-`cli-ui-amis` 直接复用你已有的 CLI：
+`click-ui` 直接复用你已有的 CLI：
 
 - **不用改代码。** 不需要装饰器、注册表或 Click 子类；控制台在启动时读取
   `click.Command` / `Group` / `CommandCollection` 对象。
@@ -283,5 +285,3 @@ Apache License 2.0，详见 [LICENSE](LICENSE)；第三方组件声明见
 
 Click 使用 BSD-3-Clause 许可证，AMIS 使用 Apache-2.0 许可证。本项目内置 AMIS SDK 以便离线使用，
 未修改上述上游项目。
-
-**English documentation:** [README.md](README.md)

@@ -1,7 +1,7 @@
 # Quick start
 
 This guide takes you from a fresh clone to a working console in a few minutes, then shows how to
-point `cli-ui-amis` at your own Click application.
+point `click-ui` at your own Click application.
 
 ## 1. Install
 
@@ -38,7 +38,7 @@ Expected output:
 已注册应用：
   - cli (cli) · 36 个命令节点
 控制台地址: http://127.0.0.1:5000/
-数据目录:   /path/to/cli-ui/data
+数据目录:   /path/to/click-ui/data
 ```
 
 Open `http://127.0.0.1:5000/`, log in with `admin` and the password shown above.

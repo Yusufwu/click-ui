@@ -1,6 +1,6 @@
 # Architecture
 
-`cli-ui-amis` is a thin, read-only layer around Click. It never monkey-patches Click, never
+`click-ui` is a thin, read-only layer around Click. It never monkey-patches Click, never
 rewrites your commands and never imports side effects into your CLI's runtime behaviour. This
 document explains how the pieces fit together and where to extend them.
 

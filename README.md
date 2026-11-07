@@ -1,4 +1,6 @@
-# cli-ui-amis
+# click-ui
+
+**中文文档:** [README.zh-CN.md](README.zh-CN.md)
 
 **Turn any Click CLI into a polished web console — without touching a line of Click code.**
 
@@ -8,7 +10,7 @@
 [![Flask 3](https://img.shields.io/badge/Flask-3.x-000000)](https://flask.palletsprojects.com/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
 
-`cli-ui-amis` introspects a normal Click application at runtime and renders it as an
+`click-ui` introspects a normal Click application at runtime and renders it as an
 [AMIS](https://amis.baidu.com/) console: a navigation tree for your command groups, a real
 form for every argument and option, execution records per operator, and a queue for
 batch-running commands.
@@ -25,13 +27,13 @@ That is the whole integration. Your Click app keeps working exactly as before:
 python examples/demo_cli.py text transform "hello world"
 ```
 
-![cli-ui-amis console](docs/images/form.png)
+![click-ui console](docs/images/form.png)
 
 ---
 
 ## Table of contents
 
-- [Why cli-ui-amis](#why-cli-ui-amis)
+- [Why click-ui](#why-click-ui)
 - [Features](#features)
 - [Quick start](#quick-start)
 - [Screenshots](#screenshots)
@@ -46,13 +48,13 @@ python examples/demo_cli.py text transform "hello world"
 
 ---
 
-## Why cli-ui-amis
+## Why click-ui
 
 Internal CLIs are usually the fastest way to ship an operation — and the least accessible one.
 Operators, QA, support engineers and product managers cannot run `--region prod --dry-run`
 from a terminal, and wrapping every script in yet another bespoke admin page does not scale.
 
-`cli-ui-amis` takes the CLI you already have and gives it a web UI:
+`click-ui` takes the CLI you already have and gives it a web UI:
 
 - **Nothing to rewrite.** No decorators, no registration, no `click` subclass. The console reads
   `click.Command` / `Group` / `CommandCollection` objects at startup.
@@ -311,5 +313,3 @@ Apache License 2.0 — see [LICENSE](LICENSE). Third-party attributions are list
 
 Click is licensed under BSD-3-Clause; AMIS is licensed under Apache-2.0. This project bundles
 the AMIS SDK for offline use and does not modify either upstream project.
-
-**中文文档:** [README.zh-CN.md](README.zh-CN.md)

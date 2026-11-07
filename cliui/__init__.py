@@ -1,3 +1,3 @@
-"""cli-ui-amis: expose existing Click CLI applications through an AMIS console."""
+"""click-ui: expose existing Click CLI applications through an AMIS console."""
 
 __version__ = "0.1.0"
