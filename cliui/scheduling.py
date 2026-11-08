@@ -17,7 +17,7 @@ from apscheduler.triggers.base import BaseTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from cliui.execute.runner import execute_command
+from cliui.execute.runner import execute_command, execute_shell
 from cliui.model import AppEntry, CommandInfo
 from cliui.storage.repo import Store, schedule_items
 
@@ -230,6 +230,28 @@ def run_schedule_once(
         app_name = str(item.get("app_name") or "")
         command_path = str(item.get("command_path") or "")
         argv = [str(arg) for arg in (item.get("argv") or [])]
+        shell_command = str(item.get("shell") or "").strip()
+        if shell_command:
+            result = execute_shell(
+                shell_command,
+                max_output_chars=max_output_chars,
+                wait_seconds=wait_seconds,
+            )
+            exception = result.exception
+            if not exception and result.status in ("failed", "skipped"):
+                exception = result.message
+            last_execution_id = record(
+                item,
+                result.status,
+                result.exit_code,
+                result.stdout,
+                result.stderr,
+                exception,
+                result.duration_ms,
+                [shell_command],
+            )
+            statuses.append(result.status)
+            continue
         entry = apps_by_name.get(app_name)
         if entry is None:
             last_execution_id = record(

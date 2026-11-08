@@ -7,6 +7,7 @@ handed to the normal Click entry point with an argv list.
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import time
 import traceback
@@ -249,4 +250,89 @@ def execute_command(
         message=_exception_message(exc, exit_code, stderr),
         exception_type=type(exc).__name__ if exc is not None else "",
         truncated=out_cut or err_cut or exc_cut,
+    )
+
+
+def execute_shell(
+    command: str,
+    *,
+    max_output_chars: int = 200_000,
+    wait_seconds: t.Optional[float] = None,
+) -> ExecutionResult:
+    """Run an arbitrary shell command (used by shell plans).
+
+    The command is executed through the platform shell (``cmd.exe`` on
+    Windows, ``/bin/sh`` elsewhere) in the server's working directory.
+    """
+    text = (command or "").strip()
+    args = [text]
+    started = time.perf_counter()
+    if not text:
+        return ExecutionResult(
+            status="failed",
+            exit_code=None,
+            stdout="",
+            stderr="",
+            exception="",
+            duration_ms=0,
+            argv=args,
+            message="Shell 命令为空",
+        )
+
+    if wait_seconds is None:
+        acquired = _EXEC_LOCK.acquire()
+    else:
+        acquired = _EXEC_LOCK.acquire(timeout=max(0.0, float(wait_seconds)))
+    if not acquired:
+        return ExecutionResult(
+            status="skipped",
+            exit_code=None,
+            stdout="",
+            stderr="",
+            exception="",
+            duration_ms=0,
+            argv=args,
+            message="另一个命令正在执行，本次定时执行已跳过。",
+            exception_type="ExecutionLockBusy",
+        )
+
+    try:
+        completed = subprocess.run(
+            text,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as exc:  # noqa: BLE001 - reported as a failed execution
+        return ExecutionResult(
+            status="failed",
+            exit_code=None,
+            stdout="",
+            stderr="",
+            exception=traceback.format_exc().strip(),
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            argv=args,
+            message=f"{type(exc).__name__}: {exc}",
+            exception_type=type(exc).__name__,
+        )
+    finally:
+        _EXEC_LOCK.release()
+
+    duration = int((time.perf_counter() - started) * 1000)
+    stdout, out_cut = _truncate(completed.stdout or "", max_output_chars)
+    stderr, err_cut = _truncate(completed.stderr or "", max_output_chars)
+    code = completed.returncode
+    return ExecutionResult(
+        status="success" if code == 0 else "failed",
+        exit_code=code,
+        stdout=stdout,
+        stderr=stderr,
+        exception="",
+        duration_ms=duration,
+        argv=args,
+        message="Shell 命令执行成功" if code == 0 else f"Shell 命令以退出码 {code} 结束",
+        exception_type="" if code == 0 else "ShellExitError",
+        truncated=out_cut or err_cut,
     )

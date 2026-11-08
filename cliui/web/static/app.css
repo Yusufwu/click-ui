@@ -1047,6 +1047,19 @@ a.cliui-brand-mark:hover {
   word-break: break-word;
 }
 
+.cliui-kind-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef7ee;
+  border: 1px solid #cfe6cf;
+  color: #2f7a3f;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 .cliui-schedule-item-argv {
   margin-top: 2px;
   font-family: var(--cliui-mono);
@@ -1115,5 +1128,10 @@ a.cliui-brand-mark:hover {
   font-size: 12px;
   font-weight: 600;
   color: var(--cliui-muted);
+}
+
+.cliui-dialog-inline-actions {
+  gap: 8px;
+  align-items: center;
 }
 

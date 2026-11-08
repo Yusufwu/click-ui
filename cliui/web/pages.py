@@ -709,6 +709,135 @@ def build_batches_page(
     }
 
 
+def _schedule_plan_fields() -> t.List[t.Dict[str, t.Any]]:
+    return [
+        {
+            "type": "radios",
+            "name": "trigger_type",
+            "label": "触发方式",
+            "options": [
+                {"label": "周期（Cron）", "value": "cron"},
+                {"label": "单次", "value": "once"},
+            ],
+        },
+        {
+            "type": "input-text",
+            "name": "cron",
+            "label": "Cron 表达式",
+            "placeholder": "0 2 * * *",
+            "description": "5 段：分 时 日 月 周。",
+        },
+        {
+            "type": "select",
+            "name": "cron_preset",
+            "label": "常用预设",
+            "clearable": True,
+            "options": [
+                {"label": label, "value": expression}
+                for label, expression in CRON_PRESETS
+            ],
+        },
+        {
+            "type": "input-text",
+            "name": "run_at",
+            "label": "单次时间",
+            "placeholder": "2026-11-08 09:00:00",
+            "description": "仅“单次”方式使用，格式 YYYY-MM-DD HH:MM:SS。",
+        },
+        {
+            "type": "input-text",
+            "name": "timezone",
+            "label": "时区（IANA）",
+            "placeholder": DEFAULT_TIMEZONE,
+        },
+        {
+            "type": "switch",
+            "name": "catch_up",
+            "label": "停机补跑",
+            "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
+        },
+    ]
+
+
+def _shell_schedule_dialog() -> t.Dict[str, t.Any]:
+    form = {
+        "type": "form",
+        "mode": "horizontal",
+        "labelWidth": 150,
+        "submitOnChange": False,
+        "wrapWithPanel": False,
+        "data": {
+            "trigger_type": "cron",
+            "cron": "",
+            "cron_preset": "",
+            "run_at": "",
+            "timezone": DEFAULT_TIMEZONE,
+            "catch_up": False,
+            "shell_commands": [""],
+        },
+        "body": [
+            {
+                "type": "alert",
+                "level": "warning",
+                "showIcon": True,
+                "body": "Shell 命令会以运行 cliui 的系统用户身份执行，请只填写可信内容。"
+                "每次触发按顺序执行，每条命令单独写入执行记录。",
+            },
+            *_schedule_plan_fields(),
+            {
+                "type": "input-array",
+                "name": "shell_commands",
+                "label": "Shell 命令",
+                "scaffold": "",
+                "addable": True,
+                "removable": True,
+                "minLength": 1,
+                "maxLength": 20,
+                "items": {
+                    "type": "input-text",
+                    "placeholder": "echo hello",
+                },
+                "description": "点击“新增”可以添加多条命令；按顺序执行（最多 20 条）。",
+            },
+            {
+                "type": "button",
+                "label": "预览未来 3 次触发",
+                "level": "link",
+                "actionType": "ajax",
+                "api": {"method": "post", "url": "/api/schedules/preview"},
+            },
+        ],
+    }
+    actions = [
+        {
+            "type": "button",
+            "label": "取消",
+            "actionType": "cancel",
+        },
+        {
+            "type": "submit",
+            "label": "创建定时",
+            "level": "primary",
+            "api": {"method": "post", "url": "/api/schedules/shell"},
+            "reload": "cliui-schedules",
+        },
+    ]
+    return {
+        "type": "button",
+        "label": "新建定时",
+        "level": "primary",
+        "actionType": "dialog",
+        "dialog": {
+            "title": "新建定时（Shell）",
+            "size": "md",
+            "closeOnEsc": True,
+            "showCloseButton": True,
+            "body": form,
+            "actions": actions,
+        },
+    }
+
+
 def build_schedules_page(
     apps: t.List[AppEntry],
     current_app: t.Optional[AppEntry],
@@ -718,13 +847,13 @@ def build_schedules_page(
     columns: t.List[t.Dict[str, t.Any]] = [
         {"name": "id", "label": "#", "width": 70},
         {"name": "app_name", "label": "应用", "width": 110},
-        {"name": "command_summary", "label": "命令", "minWidth": 220},
+        {"name": "command_summary", "label": "命令", "minWidth": 320},
         {
             "type": "tpl",
             "name": "plan",
             "label": "计划",
             "tpl": "${cron || run_at}",
-            "minWidth": 160,
+            "minWidth": 200,
         },
         {"name": "timezone", "label": "时区", "width": 140},
         {
@@ -840,13 +969,7 @@ def build_schedules_page(
             "submitOnChange": True,
         },
         "headerToolbar": [
-            {
-                "type": "button",
-                "label": "新建定时",
-                "level": "primary",
-                "actionType": "url",
-                "url": _app_link(current_app) if current_app else "/",
-            },
+            _shell_schedule_dialog(),
             "filter-toggler",
             {"type": "reload"},
             "statistics",
@@ -854,7 +977,7 @@ def build_schedules_page(
         ],
         "footerToolbar": ["statistics", "pagination"],
         "columns": columns,
-        "placeholder": "还没有定时任务。在命令表单中填写“定时设置”后点击“加入定时”即可创建。",
+        "placeholder": "还没有定时任务。点击“新建定时”可创建 Shell 计划，或在命令表单中点击“加入定时”创建 Click 命令计划。",
     }
     return {
         "type": "page",
@@ -898,16 +1021,32 @@ def build_schedule_detail_page(
     for index, item in enumerate(items):
         app_name = str(item.get("app_name") or "")
         command_path = str(item.get("command_path") or "")
+        shell_command = str(item.get("shell") or "").strip()
         argv_label = str(item.get("argv_label") or "") or " ".join(
             str(arg) for arg in (item.get("argv") or [])
         )
-        entry = next((candidate for candidate in apps if candidate.name == app_name), None)
-        node = _find_command_node(entry, command_path) if entry else None
-        link = (
-            f'<a class="cliui-schedule-item-link" href="{esc(command_url(entry.name, node.node_id))}">打开命令</a>'
-            if entry and node
-            else '<span class="cliui-schedule-item-tip">命令已不可用</span>'
-        )
+        if shell_command:
+            path_text = (
+                f'<span class="cliui-kind-badge">Shell</span> {esc(shell_command)}'
+            )
+            argv_text = ""
+            link = ""
+        else:
+            entry = next(
+                (candidate for candidate in apps if candidate.name == app_name), None
+            )
+            node = _find_command_node(entry, command_path) if entry else None
+            path_text = f"{esc(app_name)} · {esc(command_path)}"
+            argv_text = (
+                f'<div class="cliui-schedule-item-argv">{esc(argv_label)}</div>'
+                if argv_label
+                else ""
+            )
+            link = (
+                f'<a class="cliui-schedule-item-link" href="{esc(command_url(entry.name, node.node_id))}">打开命令</a>'
+                if entry and node
+                else '<span class="cliui-schedule-item-tip">命令已不可用</span>'
+            )
         remove = (
             f'<form method="post" action="/schedules/{schedule_id}/items/{index}/remove"'
             ' class="cliui-schedule-item-remove">'
@@ -920,8 +1059,8 @@ def build_schedule_detail_page(
 <div class="cliui-schedule-item">
   <span class="cliui-schedule-item-index">{index + 1}</span>
   <div class="cliui-schedule-item-body">
-    <div class="cliui-schedule-item-path">{esc(app_name)} · {esc(command_path)}</div>
-    <div class="cliui-schedule-item-argv">{esc(argv_label)}</div>
+    <div class="cliui-schedule-item-path">{path_text}</div>
+    {argv_text}
   </div>
   {link}
   {remove}
@@ -993,19 +1132,30 @@ def build_schedule_detail_page(
 
     append_hint = ""
     if items:
+        first = items[0]
         entry = next(
-            (candidate for candidate in apps if candidate.name == items[0].get("app_name")),
+            (candidate for candidate in apps if candidate.name == first.get("app_name")),
             None,
         )
-        node = _find_command_node(entry, str(items[0].get("command_path") or "")) if entry else None
-        console_url = "/?" + urlencode(
-            {"app": items[0].get("app_name") or "", "cmd": node.node_id if node else ""}
+        node = (
+            _find_command_node(entry, str(first.get("command_path") or ""))
+            if entry and not str(first.get("shell") or "").strip()
+            else None
         )
-        append_hint = (
-            '<div class="cliui-schedule-hint">在控制台填好命令参数后，展开“定时设置”，'
-            '选择本计划并点击“追加到已有计划”即可增加一条命令；也可以'
-            f'<a class="cliui-overview-open" href="{esc(console_url)}">从当前命令继续</a>。</div>'
-        )
+        if node:
+            console_url = "/?" + urlencode(
+                {"app": first.get("app_name") or "", "cmd": node.node_id}
+            )
+            append_hint = (
+                '<div class="cliui-schedule-hint">在控制台填好命令参数后，点击“加入定时”弹窗里的'
+                '“追加到已有计划”即可增加一条命令；也可以'
+                f'<a class="cliui-overview-open" href="{esc(console_url)}">从当前命令继续</a>。</div>'
+            )
+        else:
+            append_hint = (
+                '<div class="cliui-schedule-hint">Shell 计划本身不接受追加参数；如需增加命令，'
+                "可在控制台打开任意 Click 命令，在“加入定时”弹窗里追加到本计划。</div>"
+            )
 
     edit_form = {
         "type": "form",

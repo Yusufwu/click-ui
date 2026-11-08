@@ -115,9 +115,18 @@ from a terminal, and wrapping every script in yet another bespoke admin page doe
 
 **Scheduled execution**
 
-- Fill in the **Schedule settings** panel on any command form: a 5-field cron expression or a
-  one-off time, then press **Add schedule**. IANA time zones (default `Asia/Shanghai`), cron
-  presets and a preview of the next three fires are included.
+- The command form no longer shows a permanent settings panel. Fill in the command arguments, press
+  **Add schedule**, then pick a 5-field cron expression or a one-off time inside the dialog and
+  confirm. IANA time zones (default `Asia/Shanghai`), cron presets and a preview of the next three
+  fires are included, and the command arguments are submitted together with the dialog.
+- The same dialog offers **Append to existing schedule**, which pushes the current command into an
+  existing plan.
+- **New schedule** on the *Scheduled tasks* page opens a Shell dialog: add one or more shell
+  commands (one per row, max 20 rows, 2000 characters each) and create a shell-only plan with a
+  cron expression or one-off time. Shell plans are tagged with a `Shell` badge in the list and on
+  the detail page.
+- Shell commands run as the operating-system user that runs cliui (they bypass Click). Each fire
+  executes them in order and writes one execution record per command, so only add trusted input.
 - Run the scheduler as a standalone process (`cliui scheduler --data-dir data`) in production,
   or in-process with `cliui serve --scheduler` during development. Both share one code path and
   the same SQLite database.
@@ -125,8 +134,8 @@ from a terminal, and wrapping every script in yet another bespoke admin page doe
   single catch-up run.
 - Each fire is claimed atomically in SQLite, so multiple processes never run the same slot twice.
   Records are tagged with source `schedule` and link back to their schedule.
-- One schedule can hold several commands: append them from the form's **Append to existing
-  schedule** selector, and manage/remove them on the schedule detail page.
+- One schedule can hold several commands, Click commands and shell commands side by side: manage
+  and remove them on the schedule detail page.
 - The detail page edits the plan (cron, one-off time, time zone, catch-up), and **Copy as new
   schedule** reuses the same command list with its own plan.
 - Regular users manage only their own schedules; administrators can see every schedule.

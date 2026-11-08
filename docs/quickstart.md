@@ -128,7 +128,7 @@ produces its own record and its own result row.
 
 ## 6. Schedule commands
 
-Open any command, fill its form, then fill the **定时设置** (schedule settings) panel:
+Open any command, fill its form, then press **加入定时** (Add schedule). The plan dialog opens:
 
 1. **周期（Cron）** — a five-field expression (`minute hour day month weekday`), e.g. `0 2 * * *`,
    or choose one of the presets.
@@ -137,14 +137,24 @@ Open any command, fill its form, then fill the **定时设置** (schedule settin
 4. Optionally enable **停机补跑** so a fire missed while the scheduler was down is run once at
    startup.
 
-Press **预览未来 3 次触发** to confirm the plan, then **加入定时**. Creating a schedule does not
-execute the command immediately.
+Press **预览未来 3 次触发** to confirm the plan, then **加入定时** in the dialog footer. The
+command arguments are submitted together with the dialog. Creating a schedule does not execute the
+command immediately.
+
+### Shell-only schedules
+
+**新建定时** on the 定时任务 page opens a Shell dialog instead of navigating away. Type one shell
+command per row (**新增** adds rows), up to 20 rows of 2000 characters each, pick a cron expression
+or a one-off time, and press **创建定时**. Such plans are labelled `Shell` in the list and on the
+detail page. They run as the operating-system user that runs cliui and skip Click entirely, so only
+enter trusted commands.
 
 ### Multi-command plans, editing and copying
 
 - A schedule is a **plan** with one or more commands. Fill a second command's form, pick the
-  plan under **追加到已有计划** (Append to existing schedule), and press that button. Each
-  trigger runs the commands in order and writes one execution record per command.
+  plan under **追加到已有计划** (Append to existing schedule) inside the same dialog, and press
+  that button. Each trigger runs the commands in order and writes one execution record per
+  command. Click commands and shell commands can live in the same plan.
 - The **定时任务** list shows `首条命令 · 共 N 条`; open **详情** to see every command, remove
   one (at least one must remain), and edit the plan (cron / one-off time / time zone /
   catch-up). Saving recomputes the next run immediately.

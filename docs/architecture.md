@@ -85,9 +85,18 @@ plain HTTP assertions.
   `minLength` / `maxLength`.
 
 AMIS form actions are fixed: **执行** posts to `/api/execute`, **加入队列** posts to
-`/api/queue`, and **加入定时** posts to `/api/schedules`. None of them depends on a client-side
-mode flag. The schedule panel also carries a preview action that posts the current form values to
-`/api/schedules/preview`.
+`/api/queue`. **加入定时** opens an AMIS dialog instead: the plan fields (cron / one-off time /
+time zone / catch-up / append target) live in the dialog itself, while hidden `mirror__*` fields
+carry the command form values into the dialog. The footer submit posts to `/api/schedules`, the
+preview button to `/api/schedules/preview`, and **确认追加** (after picking a plan in the
+**追加到已有计划** selector) to `/api/schedules/<id>/items`. The server strips the `mirror__`
+prefix before validation. Because AMIS renders a dialog body form's own `actions` unreliably, all
+dialog buttons are declared in `dialog.actions` (footer) or as ordinary form body items, never in
+the form's `actions` array.
+
+The 定时任务 page's **新建定时** opens a second dialog that collects up to 20 raw shell commands
+(`POST /api/schedules/shell`) and stores them as `{kind: "shell", shell, ...}` plan items next to
+regular `{kind: "command", app, command, argv}` items.
 
 ## argv conversion and validation
 

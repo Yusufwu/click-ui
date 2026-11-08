@@ -70,6 +70,177 @@ RESULT_FIELDS: t.List[t.Dict[str, t.Any]] = [
 ]
 
 
+def _collect_field_names(items: t.List[t.Dict[str, t.Any]]) -> t.List[str]:
+    names: t.List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+        for key in ("body", "items"):
+            children = item.get(key)
+            if isinstance(children, list):
+                for child_name in _collect_field_names(children):
+                    if child_name not in names:
+                        names.append(child_name)
+    return names
+
+
+def _schedule_dialog(field_names: t.List[str]) -> t.Dict[str, t.Any]:
+    """Dialog opened by "加入定时" so the plan is not always visible."""
+    mirrors = [
+        {
+            "type": "hidden",
+            "name": "mirror__" + name,
+            "value": "${" + name + "}",
+        }
+        for name in field_names
+    ]
+    fields: t.List[t.Dict[str, t.Any]] = [
+        {
+            "type": "alert",
+            "level": "info",
+            "showIcon": True,
+            "body": "选择触发方式与时间后点击“加入定时”。不会立即执行命令；"
+            "也可以在下方把当前命令追加到一条已有计划。",
+        },
+        {
+            "type": "radios",
+            "name": "trigger_type",
+            "label": "触发方式",
+            "options": [
+                {"label": "周期（Cron）", "value": "cron"},
+                {"label": "单次", "value": "once"},
+            ],
+        },
+        {
+            "type": "input-text",
+            "name": "cron",
+            "label": "Cron 表达式",
+            "placeholder": "0 2 * * *",
+            "description": "5 段：分 时 日 月 周；与下方“常用预设”二选一（都填时以这里为准）。",
+        },
+        {
+            "type": "select",
+            "name": "cron_preset",
+            "label": "常用预设",
+            "clearable": True,
+            "options": [
+                {"label": label, "value": expression}
+                for label, expression in CRON_PRESETS
+            ],
+        },
+        {
+            "type": "input-text",
+            "name": "run_at",
+            "label": "单次时间",
+            "placeholder": "2026-11-08 09:00:00",
+            "description": "仅“单次”方式使用，格式 YYYY-MM-DD HH:MM:SS。",
+        },
+        {
+            "type": "input-text",
+            "name": "timezone",
+            "label": "时区（IANA）",
+            "placeholder": DEFAULT_TIMEZONE,
+            "description": "默认 Asia/Shanghai。",
+        },
+        {
+            "type": "switch",
+            "name": "catch_up",
+            "label": "停机补跑",
+            "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
+        },
+        {"type": "divider"},
+        {
+            "type": "select",
+            "name": "append_schedule_id",
+            "label": "追加到已有计划",
+            "clearable": True,
+            "source": {"method": "get", "url": "/api/schedules?perPage=100"},
+            "labelField": "title",
+            "valueField": "id",
+            "description": "把当前命令（含已填参数）追加到一条已有计划；"
+            "一个计划可以包含多条命令，按顺序执行。",
+        },
+    ]
+    dialog_form: t.Dict[str, t.Any] = {
+        "type": "form",
+        "name": "cliui-schedule-form",
+        "mode": "horizontal",
+        "labelWidth": 150,
+        "submitOnChange": False,
+        "wrapWithPanel": False,
+        "canAccessSuperData": True,
+        "data": {
+            "trigger_type": "cron",
+            "cron": "",
+            "cron_preset": "",
+            "run_at": "",
+            "timezone": DEFAULT_TIMEZONE,
+            "catch_up": False,
+            "append_schedule_id": "",
+        },
+        # Buttons placed in the body stay inside the form data scope, so they
+        # can read the values typed into this dialog (the dialog footer cannot).
+        "body": mirrors
+        + fields
+        + [
+            {
+                "type": "flex",
+                "className": "cliui-dialog-inline-actions",
+                "items": [
+                    {
+                        "type": "button",
+                        "label": "预览未来 3 次触发",
+                        "level": "link",
+                        "actionType": "ajax",
+                        "api": {"method": "post", "url": "/api/schedules/preview"},
+                    },
+                    {
+                        "type": "submit",
+                        "label": "确认追加",
+                        "level": "info",
+                        "visibleOn": "this.append_schedule_id != null && this.append_schedule_id != ''",
+                        "api": {
+                            "method": "post",
+                            "url": "/api/schedules/${append_schedule_id}/items",
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+    dialog_actions: t.List[t.Dict[str, t.Any]] = [
+        {
+            "type": "button",
+            "label": "取消",
+            "actionType": "cancel",
+        },
+        {
+            "type": "submit",
+            "label": "加入定时",
+            "level": "success",
+            "api": {"method": "post", "url": "/api/schedules"},
+        },
+    ]
+    return {
+        "type": "button",
+        "label": "加入定时",
+        "level": "success",
+        "actionType": "dialog",
+        "tooltip": "打开定时设置：按 Cron 或单次时间自动执行；不会立即执行。",
+        "dialog": {
+            "title": "定时设置",
+            "size": "md",
+            "closeOnEsc": True,
+            "showCloseButton": True,
+            "body": dialog_form,
+            "actions": dialog_actions,
+        },
+    }
+
+
 def build_command_form(
     app: AppEntry,
     node: CommandInfo,
@@ -79,14 +250,7 @@ def build_command_form(
     data = build_form_defaults(node, scopes, initial_values)
     data["_cliui_app"] = app.name
     data["_cliui_command"] = node.node_id
-    data["trigger_type"] = "cron"
-    data["cron"] = ""
-    data["cron_preset"] = ""
-    data["run_at"] = ""
-    data["timezone"] = DEFAULT_TIMEZONE
-    data["catch_up"] = False
     data["background"] = False
-    data["append_schedule_id"] = ""
 
     body: t.List[t.Dict[str, t.Any]] = [
         {
@@ -162,97 +326,7 @@ def build_command_form(
             }
         )
 
-    body.append(
-        {
-            "type": "panel",
-            "title": "定时设置（可选）",
-            "className": "cliui-schedule-panel",
-            "body": [
-                {
-                    "type": "alert",
-                    "level": "info",
-                    "showIcon": True,
-                    "body": "填写下面的计划后点击“加入定时”，命令会按 Cron 或单次时间自动执行。"
-                    "不填也可以正常“执行”或“加入队列”。",
-                },
-                {
-                    "type": "radios",
-                    "name": "trigger_type",
-                    "label": "触发方式",
-                    "options": [
-                        {"label": "周期（Cron）", "value": "cron"},
-                        {"label": "单次", "value": "once"},
-                    ],
-                },
-                {
-                    "type": "input-text",
-                    "name": "cron",
-                    "label": "Cron 表达式",
-                    "placeholder": "0 2 * * *",
-                    "description": "5 段：分 时 日 月 周；与下方“常用预设”二选一（都填时以这里为准）。",
-                },
-                {
-                    "type": "select",
-                    "name": "cron_preset",
-                    "label": "常用预设",
-                    "clearable": True,
-                    "options": [
-                        {"label": label, "value": expression}
-                        for label, expression in CRON_PRESETS
-                    ],
-                },
-                {
-                    "type": "input-text",
-                    "name": "run_at",
-                    "label": "单次时间",
-                    "placeholder": "2026-11-08 09:00:00",
-                    "description": "仅“单次”方式使用，格式 YYYY-MM-DD HH:MM:SS。",
-                },
-                {
-                    "type": "input-text",
-                    "name": "timezone",
-                    "label": "时区（IANA）",
-                    "placeholder": DEFAULT_TIMEZONE,
-                    "description": "默认 Asia/Shanghai。",
-                },
-                {
-                    "type": "switch",
-                    "name": "catch_up",
-                    "label": "停机补跑",
-                    "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
-                },
-                {
-                    "type": "action",
-                    "label": "预览未来 3 次触发",
-                    "level": "link",
-                    "actionType": "ajax",
-                    "api": {"method": "post", "url": "/api/schedules/preview"},
-                },
-                {"type": "divider"},
-                {
-                    "type": "select",
-                    "name": "append_schedule_id",
-                    "label": "追加到已有计划",
-                    "clearable": True,
-                    "source": {"method": "get", "url": "/api/schedules?perPage=100"},
-                    "labelField": "title",
-                    "valueField": "id",
-                    "description": "把当前命令（含已填参数）追加到一条已有计划；"
-                    "一个计划可以包含多条命令，按顺序执行。",
-                },
-                {
-                    "type": "submit",
-                    "label": "追加到已有计划",
-                    "level": "info",
-                    "visibleOn": "this.append_schedule_id != null && this.append_schedule_id != ''",
-                    "api": {
-                        "method": "post",
-                        "url": "/api/schedules/${append_schedule_id}/items",
-                    },
-                },
-            ],
-        }
-    )
+    field_names = _collect_field_names(body)
 
     body.append(
         {
@@ -307,13 +381,7 @@ def build_command_form(
                 "tooltip": "点击“加入队列”不会立即执行；可以在“记录队列”页中把多条命令批量执行。",
                 "api": {"method": "post", "url": "/api/queue"},
             },
-            {
-                "type": "submit",
-                "label": "加入定时",
-                "level": "success",
-                "tooltip": "按上方“定时设置”创建定时任务；不会立即执行。可在“定时任务”页查看与启停。",
-                "api": {"method": "post", "url": "/api/schedules"},
-            },
+            _schedule_dialog(field_names),
             {
                 "type": "submit",
                 "label": "预览命令",

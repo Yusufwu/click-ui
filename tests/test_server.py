@@ -215,6 +215,25 @@ def test_overview_search_favorites_and_recent(admin_client, fixture_entry, store
     assert ("fixture", "echo") not in store.favorite_commands(admin["id"])
 
 
+def test_schedule_dialogs_are_rendered(admin_client):
+    page = admin_client.get("/?app=fixture&cmd=n1").get_data(as_text=True)
+    assert "加入定时" in page
+    assert "定时设置" in page
+    assert "actionType" in page
+    assert "trigger_type" in page
+    # The dialog footer renders AMIS actions; parameters are carried through
+    # mirror fields so the dialog can submit the command form's values.
+    assert "mirror__" in page
+    assert "追加到已有计划" in page
+    assert "canAccessSuperData" in page
+
+    schedules = admin_client.get("/schedules").get_data(as_text=True)
+    assert "新建定时" in schedules
+    assert "Shell 命令" in schedules
+    assert "shell_commands" in schedules
+    assert "创建定时" in schedules
+
+
 def test_background_execution_is_pollable(admin_client, fixture_entry, store):
     import time
 

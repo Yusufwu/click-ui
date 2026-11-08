@@ -83,6 +83,16 @@ def _payload() -> t.Dict[str, t.Any]:
     return {}
 
 
+def _restore_mirrors(data: t.Dict[str, t.Any]) -> t.Dict[str, t.Any]:
+    """Copy ``mirror__<name>`` values (sent by the schedule dialog) back."""
+    for key in list(data.keys()):
+        if not key.startswith("mirror__"):
+            continue
+        target = key[len("mirror__"):]
+        data.setdefault(target, data[key])
+    return data
+
+
 def _safe_filename(name: str) -> str:
     base = os.path.basename((name or "upload.bin").replace("\\", "/"))
     base = re.sub(r"[^\w.\- ()\[\]]+", "_", base, flags=re.UNICODE)
@@ -1017,6 +1027,65 @@ def create_app(
             timezone=str(data.get("timezone") or ""),
         )
 
+    @app.post("/api/schedules/shell")
+    @api_login_required
+    def api_schedule_shell_create():
+        data = _payload()
+        raw = data.get("shell_commands")
+        if isinstance(raw, list):
+            values = [str(value).strip() for value in raw]
+        else:
+            values = [line.strip() for line in str(raw or "").splitlines()]
+        commands = [value for value in values if value]
+        if not commands:
+            return api_error("请至少填写一条 Shell 命令")
+        if len(commands) > 20:
+            return api_error("一个计划最多 20 条 Shell 命令")
+        if any(len(command) > 2000 for command in commands):
+            return api_error("单条 Shell 命令最多 2000 个字符")
+        try:
+            cron, run_at, tz = _schedule_plan(data)
+        except ValueError as exc:
+            return api_error(str(exc))
+        next_value = next_fire_time(cron=cron, run_at=run_at, timezone=tz)
+        if next_value is None:
+            return api_error("该计划没有未来的触发时间，请修改运行时间")
+        items = [
+            {
+                "kind": "shell",
+                "shell": command,
+                "app_name": "shell",
+                "command_path": command,
+                "argv": [command],
+                "params": {},
+                "argv_label": command,
+            }
+            for command in commands
+        ]
+        schedule_id = store.create_schedule(
+            app_name="shell",
+            command_path=commands[0],
+            argv=[commands[0]],
+            params={},
+            argv_label=commands[0],
+            cron=cron,
+            run_at=run_at,
+            timezone=tz,
+            catch_up=_truthy(data.get("catch_up")),
+            enabled=True,
+            created_by=g.user["id"],
+            created_by_name=g.user["username"],
+            next_run_at=next_value,
+            items=items,
+        )
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg=f"已创建定时任务 #{schedule_id}（{len(commands)} 条 Shell 命令），"
+            f"下次运行 {next_value}",
+            data={"schedule_id": schedule_id, "next_run_at": next_value},
+        )
+
     @app.post("/api/schedules/preview")
     @api_login_required
     def api_schedule_preview():
@@ -1037,7 +1106,7 @@ def create_app(
     @app.post("/api/schedules")
     @api_login_required
     def api_schedule_create():
-        data = _payload()
+        data = _restore_mirrors(_payload())
         entry = entry_for(data)
         if entry is None:
             return api_error("应用不存在", 404)
@@ -1097,7 +1166,11 @@ def create_app(
         )
         for item in items:
             plan_items = schedule_items(item)
-            summary = str(item.get("command_path") or "")
+            first = plan_items[0] if plan_items else {}
+            shell = str(first.get("shell") or "").strip()
+            summary = f"Shell: {shell}" if shell else str(item.get("command_path") or "")
+            if len(summary) > 90:
+                summary = summary[:87] + "..."
             if len(plan_items) > 1:
                 summary = f"{summary} · 共 {len(plan_items)} 条"
             item["items_count"] = len(plan_items)
@@ -1223,7 +1296,7 @@ def create_app(
         if row is None:
             return api_error("定时任务不存在", 404)
         require_schedule_owned(row)
-        data = _payload()
+        data = _restore_mirrors(_payload())
         entry = entry_for(data)
         if entry is None:
             return api_error("应用不存在", 404)

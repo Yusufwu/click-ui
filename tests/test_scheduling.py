@@ -459,3 +459,68 @@ def test_schedule_page_forms_run_toggle_and_copy(admin_client, fixture_entry, st
     assert response.status_code == 302
     assert response.headers["Location"].startswith("/schedules/")
     assert admin_client.get("/api/schedules").get_json()["data"]["total"] == 2
+
+
+def test_schedule_api_accepts_dialog_mirror_fields(admin_client, fixture_entry, store):
+    data = schedule_payload(fixture_entry, text="mirror")
+    mirrored = {"mirror__" + key: value for key, value in data.items()}
+    mirrored.update(
+        {"trigger_type": "cron", "cron": "0 5 * * *", "timezone": "Asia/Shanghai"}
+    )
+    body = admin_client.post("/api/schedules", json=mirrored).get_json()
+    assert body["status"] == 0, body
+    schedule_id = body["data"]["schedule_id"]
+    assert store.get_schedule(schedule_id)["cron"] == "0 5 * * *"
+
+
+def test_shell_schedule_runs_multiple_commands(admin_client, store):
+    body = admin_client.post(
+        "/api/schedules/shell",
+        json={
+            "trigger_type": "cron",
+            "cron": "0 2 * * *",
+            "timezone": "Asia/Shanghai",
+            "shell_commands": ["echo cliui-one", "echo cliui-two"],
+        },
+    ).get_json()
+    assert body["status"] == 0, body
+    schedule_id = body["data"]["schedule_id"]
+
+    schedule = store.get_schedule(schedule_id)
+    assert schedule["app_name"] == "shell"
+    assert len(schedule_items(schedule)) == 2
+
+    run = admin_client.post(f"/api/schedules/{schedule_id}/run").get_json()
+    assert run["status"] == 0, run
+    rows = store.schedule_executions(schedule_id)
+    assert len(rows) == 2
+    assert all(row["app"] == "shell" for row in rows)
+    assert all(row["trigger"] == "schedule" for row in rows)
+    assert "cliui-one" in rows[1]["stdout"]
+    assert "cliui-two" in rows[0]["stdout"]
+
+    page = admin_client.get(f"/schedules/{schedule_id}").get_data(as_text=True)
+    assert "Shell" in page
+    assert "cliui-one" in page
+
+    listed = admin_client.get("/api/schedules").get_json()["data"]["items"][0]
+    assert listed["command_summary"].startswith("Shell:")
+    assert "共 2 条" in listed["command_summary"]
+
+
+def test_shell_schedule_validation(admin_client):
+    empty = admin_client.post(
+        "/api/schedules/shell",
+        json={"trigger_type": "cron", "cron": "0 2 * * *", "shell_commands": []},
+    ).get_json()
+    assert empty["status"] == 1
+
+    too_many = admin_client.post(
+        "/api/schedules/shell",
+        json={
+            "trigger_type": "cron",
+            "cron": "0 2 * * *",
+            "shell_commands": [f"echo {index}" for index in range(21)],
+        },
+    ).get_json()
+    assert too_many["status"] == 1
