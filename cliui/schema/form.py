@@ -87,6 +87,94 @@ def _collect_field_names(items: t.List[t.Dict[str, t.Any]]) -> t.List[str]:
     return names
 
 
+def build_schedule_fields(
+    cron_input_id: str = "cliui-schedule-cron",
+) -> t.List[t.Dict[str, t.Any]]:
+    """Trigger fields shared by the dialog, the Shell dialog and the edit form.
+
+    Only the fields of the selected trigger type are shown; picking a preset
+    writes the expression straight into the Cron input so the user always
+    submits a single, visible source of truth.
+    """
+    return [
+        {
+            "type": "radios",
+            "name": "trigger_type",
+            "label": "触发方式",
+            "options": [
+                {"label": "周期（Cron）", "value": "cron"},
+                {"label": "单次", "value": "once"},
+            ],
+        },
+        {
+            "type": "flex",
+            "className": "cliui-cron-presets",
+            "visibleOn": "this.trigger_type == 'cron'",
+            "items": [
+                {"type": "tpl", "tpl": '<span class="cliui-preset-label">常用预设</span>'},
+                *[
+                    {
+                        "type": "button",
+                        "label": label,
+                        "size": "sm",
+                        "className": "cliui-preset-tag",
+                        "onEvent": {
+                            "click": {
+                                "actions": [
+                                    {
+                                        "actionType": "setValue",
+                                        "componentId": cron_input_id,
+                                        "args": {"value": expression},
+                                    },
+                                ]
+                            }
+                        },
+                    }
+                    for label, expression in CRON_PRESETS
+                ],
+                {
+                    "type": "tpl",
+                    "tpl": '<span class="cliui-preset-hint">点击后填入下方 Cron 表达式</span>',
+                },
+            ],
+        },
+        {
+            "type": "input-text",
+            "id": cron_input_id,
+            "name": "cron",
+            "className": "cliui-cron-input",
+            "label": "Cron 表达式",
+            "placeholder": "0 2 * * *",
+            "clearable": True,
+            "visibleOn": "this.trigger_type == 'cron'",
+            "description": "5 段：分 时 日 月 周，例如 0 2 * * *。",
+        },
+        {
+            "type": "input-datetime",
+            "name": "run_at",
+            "label": "单次时间",
+            "format": "YYYY-MM-DD HH:mm:ss",
+            "timeFormat": "HH:mm:ss",
+            "placeholder": "点击选择日期与时间",
+            "visibleOn": "this.trigger_type == 'once'",
+            "description": "选择具体的日期与时间，保存格式为 YYYY-MM-DD HH:MM:SS。",
+        },
+        {
+            "type": "input-text",
+            "name": "timezone",
+            "label": "时区（IANA）",
+            "placeholder": DEFAULT_TIMEZONE,
+            "description": "默认 Asia/Shanghai。",
+        },
+        {
+            "type": "switch",
+            "name": "catch_up",
+            "label": "停机补跑",
+            "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
+        },
+    ]
+
+
 def _schedule_dialog(field_names: t.List[str]) -> t.Dict[str, t.Any]:
     """Dialog opened by "加入定时" so the plan is not always visible."""
     mirrors = [
@@ -105,52 +193,7 @@ def _schedule_dialog(field_names: t.List[str]) -> t.Dict[str, t.Any]:
             "body": "选择触发方式与时间后点击“加入定时”。不会立即执行命令；"
             "也可以在下方把当前命令追加到一条已有计划。",
         },
-        {
-            "type": "radios",
-            "name": "trigger_type",
-            "label": "触发方式",
-            "options": [
-                {"label": "周期（Cron）", "value": "cron"},
-                {"label": "单次", "value": "once"},
-            ],
-        },
-        {
-            "type": "input-text",
-            "name": "cron",
-            "label": "Cron 表达式",
-            "placeholder": "0 2 * * *",
-            "description": "5 段：分 时 日 月 周；与下方“常用预设”二选一（都填时以这里为准）。",
-        },
-        {
-            "type": "select",
-            "name": "cron_preset",
-            "label": "常用预设",
-            "clearable": True,
-            "options": [
-                {"label": label, "value": expression}
-                for label, expression in CRON_PRESETS
-            ],
-        },
-        {
-            "type": "input-text",
-            "name": "run_at",
-            "label": "单次时间",
-            "placeholder": "2026-11-08 09:00:00",
-            "description": "仅“单次”方式使用，格式 YYYY-MM-DD HH:MM:SS。",
-        },
-        {
-            "type": "input-text",
-            "name": "timezone",
-            "label": "时区（IANA）",
-            "placeholder": DEFAULT_TIMEZONE,
-            "description": "默认 Asia/Shanghai。",
-        },
-        {
-            "type": "switch",
-            "name": "catch_up",
-            "label": "停机补跑",
-            "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
-        },
+        *build_schedule_fields(),
         {"type": "divider"},
         {
             "type": "select",

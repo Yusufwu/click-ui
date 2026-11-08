@@ -8,6 +8,7 @@ import pytest
 
 from cliui.scheduling import (
     SchedulerService,
+    describe_cron,
     next_fire_times,
     validate_schedule,
 )
@@ -163,6 +164,51 @@ def test_schedule_preview(admin_client, fixture_entry):
     data["run_at"] = "2020-01-01 00:00:00"
     body = admin_client.post("/api/schedules/preview", json=data).get_json()
     assert body["data"]["times"] == []
+
+
+def test_describe_cron_is_human_readable():
+    assert describe_cron("0 2 * * *") == "每天 02:00"
+    assert describe_cron("0 9 * * 1") == "每周一 09:00"
+    assert describe_cron("0 3 1 * *") == "每月 1 日 03:00"
+    assert describe_cron("0 2 1 3 *") == "每年 3 月 1 日 02:00"
+    assert describe_cron("*/5 * * * *") == "每 5 分钟"
+    assert describe_cron("0 * * * *") == "每小时整点"
+    assert describe_cron("5 4 * * *") == "每天 04:05"
+    assert "自定义组合" in describe_cron("0 2 * 3 1")
+
+
+def test_cron_day_of_week_matches_crontab():
+    # crontab 0 = Sunday and 1 = Monday; APScheduler 3.x defaults to 0 = Monday.
+    monday = next_fire_times(
+        cron="0 9 * * 1",
+        run_at=None,
+        timezone="Asia/Shanghai",
+        count=1,
+        after=datetime(2026, 11, 8, 12, 0, 0, tzinfo=TZ),
+    )
+    assert monday == ["2026-11-09 09:00:00"]
+    sunday = next_fire_times(
+        cron="0 9 * * 0",
+        run_at=None,
+        timezone="Asia/Shanghai",
+        count=1,
+        after=datetime(2026, 11, 8, 12, 0, 0, tzinfo=TZ),
+    )
+    assert sunday == ["2026-11-15 09:00:00"]
+
+
+def test_schedule_describe_api(admin_client):
+    body = admin_client.get(
+        "/api/schedules/describe", query_string={"cron": "0 9 * * 1"}
+    ).get_json()
+    assert body["status"] == 0
+    assert body["data"]["description"] == "每周一 09:00"
+
+    body = admin_client.get(
+        "/api/schedules/describe", query_string={"cron": "oops"}
+    ).get_json()
+    assert body["status"] == 1
+    assert "Cron 表达式不合法" in body["msg"]
 
 
 def test_run_now_records_schedule_trigger(admin_client, fixture_entry, store):
@@ -430,6 +476,10 @@ def test_schedule_detail_page_and_item_removal(admin_client, fixture_entry, stor
     assert "计划设置" in page
     assert "命令列表（2 条）" in page
     assert f"/schedules/{schedule_id}/items/0/remove" in page
+    # The edit form shows only the fields for the selected trigger type and
+    # renders the presets as tag-like buttons.
+    assert "this.trigger_type" in page
+    assert "cliui-cron-presets" in page
 
     response = admin_client.post(f"/schedules/{schedule_id}/items/0/remove")
     assert response.status_code == 302

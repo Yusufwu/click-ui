@@ -32,6 +32,7 @@ from cliui.model import AppEntry, CommandInfo
 from cliui.registry import AppLoadError, reload_app_entry
 from cliui.scheduling import (
     SchedulerService,
+    describe_cron,
     next_fire_for_schedule,
     next_fire_preview_message,
     next_fire_time,
@@ -1102,6 +1103,16 @@ def create_app(
             msg=next_fire_preview_message(times),
             data={"times": times},
         )
+
+    @app.get("/api/schedules/describe")
+    @api_login_required
+    def api_schedule_describe():
+        expression = request.args.get("cron", "")
+        try:
+            description = describe_cron(expression)
+        except ValueError as exc:
+            return _status_payload(ok=False, msg=str(exc), http_status=400)
+        return _status_payload(ok=True, data={"description": description})
 
     @app.post("/api/schedules")
     @api_login_required

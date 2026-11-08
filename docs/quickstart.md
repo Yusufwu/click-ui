@@ -130,9 +130,12 @@ produces its own record and its own result row.
 
 Open any command, fill its form, then press **加入定时** (Add schedule). The plan dialog opens:
 
-1. **周期（Cron）** — a five-field expression (`minute hour day month weekday`), e.g. `0 2 * * *`,
-   or choose one of the presets.
-2. **单次** — one timestamp in `YYYY-MM-DD HH:MM:SS` form.
+1. **周期（Cron）** — pick a preset tag (每小时整点 / 每天 02:00 / 每周一 09:00 / 每月 1 日 03:00);
+   clicking it writes the five-field expression (`minute hour day month weekday`) into the
+   **Cron 表达式** box, where you can still edit it, e.g. `0 2 * * *`. A line below the box
+   explains the expression in plain Chinese ("人话解释：每天 02:00"); invalid input shows the
+   validation message instead.
+2. **单次** — pick a date and time with the picker; it is stored as `YYYY-MM-DD HH:MM:SS`.
 3. **时区** — an IANA name, default `Asia/Shanghai`.
 4. Optionally enable **停机补跑** so a fire missed while the scheduler was down is run once at
    startup.

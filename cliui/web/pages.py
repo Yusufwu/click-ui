@@ -8,8 +8,8 @@ import typing as t
 from urllib.parse import urlencode
 
 from cliui.model import AppEntry, CommandInfo
-from cliui.scheduling import CRON_PRESETS, DEFAULT_TIMEZONE
-from cliui.schema.form import build_command_form
+from cliui.scheduling import DEFAULT_TIMEZONE
+from cliui.schema.form import build_command_form, build_schedule_fields
 from cliui.schema.nav import build_nav, command_url
 from cliui.storage.repo import schedule_items
 
@@ -710,53 +710,7 @@ def build_batches_page(
 
 
 def _schedule_plan_fields() -> t.List[t.Dict[str, t.Any]]:
-    return [
-        {
-            "type": "radios",
-            "name": "trigger_type",
-            "label": "触发方式",
-            "options": [
-                {"label": "周期（Cron）", "value": "cron"},
-                {"label": "单次", "value": "once"},
-            ],
-        },
-        {
-            "type": "input-text",
-            "name": "cron",
-            "label": "Cron 表达式",
-            "placeholder": "0 2 * * *",
-            "description": "5 段：分 时 日 月 周。",
-        },
-        {
-            "type": "select",
-            "name": "cron_preset",
-            "label": "常用预设",
-            "clearable": True,
-            "options": [
-                {"label": label, "value": expression}
-                for label, expression in CRON_PRESETS
-            ],
-        },
-        {
-            "type": "input-text",
-            "name": "run_at",
-            "label": "单次时间",
-            "placeholder": "2026-11-08 09:00:00",
-            "description": "仅“单次”方式使用，格式 YYYY-MM-DD HH:MM:SS。",
-        },
-        {
-            "type": "input-text",
-            "name": "timezone",
-            "label": "时区（IANA）",
-            "placeholder": DEFAULT_TIMEZONE,
-        },
-        {
-            "type": "switch",
-            "name": "catch_up",
-            "label": "停机补跑",
-            "description": "调度器停机期间错过的触发默认记为 missed；开启后最多补跑一次。",
-        },
-    ]
+    return build_schedule_fields()
 
 
 def _shell_schedule_dialog() -> t.Dict[str, t.Any]:
@@ -1171,49 +1125,7 @@ def build_schedule_detail_page(
             "catch_up": bool(schedule.get("catch_up")),
         },
         "body": [
-            {
-                "type": "radios",
-                "name": "trigger_type",
-                "label": "触发方式",
-                "options": [
-                    {"label": "周期（Cron）", "value": "cron"},
-                    {"label": "单次", "value": "once"},
-                ],
-            },
-            {
-                "type": "input-text",
-                "name": "cron",
-                "label": "Cron 表达式",
-                "placeholder": "0 2 * * *",
-            },
-            {
-                "type": "select",
-                "name": "cron_preset",
-                "label": "常用预设",
-                "clearable": True,
-                "options": [
-                    {"label": label, "value": expression}
-                    for label, expression in CRON_PRESETS
-                ],
-            },
-            {
-                "type": "input-text",
-                "name": "run_at",
-                "label": "单次时间",
-                "placeholder": "2026-11-08 09:00:00",
-            },
-            {
-                "type": "input-text",
-                "name": "timezone",
-                "label": "时区（IANA）",
-                "placeholder": DEFAULT_TIMEZONE,
-            },
-            {
-                "type": "switch",
-                "name": "catch_up",
-                "label": "停机补跑",
-                "description": "调度器停机期间错过的触发会记为 missed；开启后最多补跑一次。",
-            },
+            *build_schedule_fields("cliui-schedule-edit-cron"),
         ],
         "actions": [
             {

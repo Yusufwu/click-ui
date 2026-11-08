@@ -226,6 +226,13 @@ def test_schedule_dialogs_are_rendered(admin_client):
     assert "mirror__" in page
     assert "追加到已有计划" in page
     assert "canAccessSuperData" in page
+    # Cron and one-off fields are gated by the chosen trigger type. Presets are
+    # tag-like buttons that write the expression into the Cron input, and the
+    # one-off time uses a date-time picker.
+    assert "this.trigger_type" in page
+    assert "cliui-cron-presets" in page
+    assert "setValue" in page
+    assert "input-datetime" in page
 
     schedules = admin_client.get("/schedules").get_data(as_text=True)
     assert "新建定时" in schedules

@@ -87,7 +87,10 @@ plain HTTP assertions.
 AMIS form actions are fixed: **执行** posts to `/api/execute`, **加入队列** posts to
 `/api/queue`. **加入定时** opens an AMIS dialog instead: the plan fields (cron / one-off time /
 time zone / catch-up / append target) live in the dialog itself, while hidden `mirror__*` fields
-carry the command form values into the dialog. The footer submit posts to `/api/schedules`, the
+carry the command form values into the dialog. Only the fields for the chosen trigger type are
+visible. Cron presets are tag-style buttons whose `onEvent.click` runs an AMIS `setValue` action
+with `args.value`, so clicking one writes the expression into the Cron input; the one-off
+field is an `input-datetime` picker. The footer submit posts to `/api/schedules`, the
 preview button to `/api/schedules/preview`, and **确认追加** (after picking a plan in the
 **追加到已有计划** selector) to `/api/schedules/<id>/items`. The server strips the `mirror__`
 prefix before validation. Because AMIS renders a dialog body form's own `actions` unreliably, all
@@ -176,8 +179,12 @@ transparently decoded on read, which keeps the column type and avoids a BLOB mig
 inside `cliui serve --scheduler` (background thread) and in the standalone `cliui scheduler`
 process.
 
-- `validate_schedule()` accepts either a five-field cron expression (`CronTrigger.from_crontab`)
-  or a single run-at timestamp, validates the IANA time zone, and normalizes both.
+- `validate_schedule()` accepts either a five-field cron expression or a single run-at
+  timestamp, validates the IANA time zone, and normalizes both.
+- `describe_cron()` turns the same expression into a short Chinese sentence used by the
+  `GET /api/schedules/describe` endpoint and the hint line in the schedule forms.
+- Numeric day-of-week fields are expanded to weekday names before reaching APScheduler:
+  crontab treats `0` as Sunday while APScheduler 3.x treats it as Monday.
 - `next_fire_times()` asks the trigger for the next N fires without sleeping; the form preview
   and the API share this path, which keeps tests fast and deterministic.
 - `SchedulerService` builds a `BackgroundScheduler` or `BlockingScheduler`, loads enabled rows

@@ -1135,3 +1135,36 @@ a.cliui-brand-mark:hover {
   align-items: center;
 }
 
+.cliui-cron-presets {
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cliui-preset-label {
+  font-weight: 600;
+  color: var(--cliui-ink);
+}
+
+.cliui-preset-hint {
+  font-size: 12px;
+  color: var(--cliui-muted);
+}
+
+.cliui-preset-tag {
+  border-radius: 999px;
+  padding: 2px 12px;
+  font-size: 12px;
+  font-family: var(--cliui-mono);
+}
+
+.cliui-cron-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--cliui-muted);
+}
+
+.cliui-cron-hint-error {
+  color: #b33131;
+}
+

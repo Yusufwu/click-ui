@@ -57,18 +57,182 @@ def parse_time(text: str, tz: ZoneInfo) -> datetime:
     raise ValueError(f"时间格式不正确: {text}（示例：2026-11-08 09:00:00）")
 
 
+_WEEKDAY_KEYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+_WEEKDAY_CN = ("日", "一", "二", "三", "四", "五", "六")
+
+
+def _expand_weekday_field(field: str) -> t.Optional[t.List[int]]:
+    """Expand a numeric crontab day-of-week field into 0..6 (Sunday=0).
+
+    Returns ``None`` when the field already uses names or cannot be parsed.
+    """
+    text = (field or "").strip()
+    if not text or any(ch.isalpha() for ch in text):
+        return None
+    days: t.Set[int] = set()
+    for chunk in text.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            return None
+        step = 1
+        if "/" in chunk:
+            chunk, _, step_text = chunk.partition("/")
+            try:
+                step = int(step_text)
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+        if chunk == "*":
+            start, end = 0, 6
+        elif "-" in chunk:
+            left, _, right = chunk.partition("-")
+            try:
+                start, end = int(left), int(right)
+            except ValueError:
+                return None
+        else:
+            try:
+                start = end = int(chunk)
+            except ValueError:
+                return None
+        if not (0 <= start <= 7 and 0 <= end <= 7):
+            return None
+        start, end = start % 7, end % 7
+        if start <= end:
+            seq = list(range(start, end + 1))
+        else:
+            seq = list(range(start, 7)) + list(range(0, end + 1))
+        days.update(seq[::step])
+    return sorted(days)
+
+
+def normalize_day_of_week(field: str) -> str:
+    """Translate a crontab day-of-week field for APScheduler.
+
+    APScheduler 3.x treats ``0`` as Monday while crontab treats it as Sunday.
+    Numeric fields are expanded to explicit weekday names so both agree.
+    """
+    days = _expand_weekday_field(field)
+    if days is None:
+        return (field or "").strip()
+    if len(days) == 7:
+        return "*"
+    return ",".join(_WEEKDAY_KEYS[day] for day in days)
+
+
+def _cron_trigger(expression: str, timezone: t.Optional[str] = None) -> CronTrigger:
+    minute, hour, day, month, day_of_week = expression.split()
+    return CronTrigger(
+        minute=minute,
+        hour=hour,
+        day=day,
+        month=month,
+        day_of_week=normalize_day_of_week(day_of_week),
+        timezone=timezone,
+    )
+
+
 def normalize_cron(expression: str) -> str:
     text = (expression or "").strip()
     if not text:
         raise ValueError("Cron 表达式不能为空")
+    parts = text.split()
+    if len(parts) != 5:
+        raise ValueError(
+            f"Cron 表达式不合法: {text}（需要 5 段：分 时 日 月 周，例如 0 2 * * *）"
+        )
+    normalized = " ".join(parts)
     try:
-        # Validates the five fields (minute hour day month day_of_week).
-        CronTrigger.from_crontab(text)
+        # Validates all five fields (minute hour day month day_of_week).
+        _cron_trigger(normalized)
     except (ValueError, TypeError) as exc:
         raise ValueError(
             f"Cron 表达式不合法: {text}（需要 5 段：分 时 日 月 周，例如 0 2 * * *）"
         ) from exc
-    return " ".join(text.split())
+    return normalized
+
+
+def _clock_text(minute: str, hour: str) -> t.Optional[str]:
+    """Human text for the minute/hour pair, or ``None`` for exotic shapes."""
+    if minute == "*" and hour == "*":
+        return "每分钟"
+    if minute.startswith("*/") and minute[2:].isdigit():
+        step = int(minute[2:])
+        return f"每 {step} 分钟" if hour == "*" and step > 0 else None
+    if not minute.isdigit():
+        return None
+    mm = int(minute)
+    if hour == "*":
+        return "每小时整点" if mm == 0 else f"每小时的第 {mm} 分钟"
+    if hour.startswith("*/") and hour[2:].isdigit():
+        step = int(hour[2:])
+        if step <= 0:
+            return None
+        return f"每 {step} 小时整点" if mm == 0 else f"每 {step} 小时的第 {mm} 分钟"
+    if hour.isdigit():
+        return f"{int(hour):02d}:{mm:02d}"
+    return None
+
+
+def _day_text(day: str) -> t.Optional[str]:
+    if day == "*":
+        return None
+    if day.startswith("*/") and day[2:].isdigit():
+        return f"每隔 {int(day[2:])} 天"
+    if day.isdigit():
+        return f"{int(day)} 日"
+    if "," in day and all(part.strip().isdigit() for part in day.split(",")):
+        return "、".join(part.strip() for part in day.split(",")) + " 日"
+    left, _, right = day.partition("-")
+    if left.isdigit() and right.isdigit() and not _:
+        return f"{left} 至 {right} 日"
+    return None
+
+
+def _weekday_text(day_of_week: str) -> t.Optional[str]:
+    days = _expand_weekday_field(day_of_week)
+    if days is None:
+        names = _WEEKDAY_KEYS
+        parts = [part.strip() for part in day_of_week.split(",")]
+        if not all(part in names for part in parts):
+            return None
+        days = sorted(names.index(part) for part in parts)
+    if not days or len(days) == 7:
+        return None
+    return "、".join(_WEEKDAY_CN[day] for day in days)
+
+
+def describe_cron(expression: str) -> str:
+    """Return a short Chinese sentence for a five-field cron expression."""
+    normalized = normalize_cron(expression)
+    minute, hour, day, month, day_of_week = normalized.split()
+    time_text = _clock_text(minute, hour)
+    if time_text is None:
+        return "按 Cron 表达式触发（自定义组合）"
+    if time_text.startswith("每"):
+        if day == "*" and day_of_week == "*" and month == "*":
+            return time_text
+        return "按 Cron 表达式触发（自定义组合）"
+
+    day_text = _day_text(day) if day != "*" else None
+    week_text = _weekday_text(day_of_week) if day_of_week != "*" else None
+    if day != "*" and day_text is None:
+        return "按 Cron 表达式触发（自定义组合）"
+    if day_of_week != "*" and week_text is None:
+        return "按 Cron 表达式触发（自定义组合）"
+
+    if month == "*" and day_text is None and week_text is None:
+        return f"每天 {time_text}"
+    if month == "*" and day_text is None and week_text is not None:
+        return f"每周{week_text} {time_text}"
+    if month == "*" and day_text is not None and week_text is None:
+        return f"每月 {day_text} {time_text}"
+    if month.isdigit() and day_text is not None and week_text is None:
+        return f"每年 {int(month)} 月 {day_text} {time_text}"
+    if month.isdigit() and day_text is None and week_text is None:
+        return f"每年 {int(month)} 月每天 {time_text}"
+    return "按 Cron 表达式触发（自定义组合）"
 
 
 def validate_schedule(
@@ -104,7 +268,7 @@ def build_trigger(
 ) -> BaseTrigger:
     tz = get_timezone(timezone)
     if cron:
-        return CronTrigger.from_crontab(cron, timezone=tz)
+        return _cron_trigger(cron, timezone=tz)
     if run_at:
         return DateTrigger(run_date=parse_time(run_at, tz), timezone=tz)
     raise ValueError("定时任务缺少 Cron 表达式或运行时间")
