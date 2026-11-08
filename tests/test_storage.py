@@ -149,3 +149,83 @@ def test_summarize_params_hides_long_values():
     assert len(summary) < 200
     assert "flag" in summary
     assert "list" in summary
+
+
+def test_large_output_is_compressed_and_decoded(store):
+    import sqlite3
+
+    big = "line of output\n" * 4000
+    record_id = store.record_execution(
+        user_id=1,
+        username="admin",
+        app="demo",
+        command_id="n1",
+        command_path="echo",
+        params={},
+        argv=["echo"],
+        argv_label="demo echo",
+        status="success",
+        exit_code=0,
+        stdout=big,
+        stderr="",
+        exception="",
+        duration_ms=100,
+    )
+    conn = sqlite3.connect(str(store.db_path))
+    raw = conn.execute(
+        "SELECT stdout FROM executions WHERE id = ?", (record_id,)
+    ).fetchone()[0]
+    conn.close()
+    assert raw.startswith("cliui-gzip:")
+    assert store.get_execution(record_id)["stdout"] == big
+    rows, _total = store.list_executions(user_id=None)
+    assert rows[0]["stdout"] == big
+
+
+def test_purge_executions_respects_retention(store):
+    import sqlite3
+
+    keep = store.record_execution(
+        user_id=1,
+        username="admin",
+        app="demo",
+        command_id="n1",
+        command_path="echo",
+        params={},
+        argv=["echo"],
+        argv_label="demo echo",
+        status="success",
+        exit_code=0,
+        stdout="fresh",
+        stderr="",
+        exception="",
+        duration_ms=0,
+    )
+    old = store.record_execution(
+        user_id=1,
+        username="admin",
+        app="demo",
+        command_id="n2",
+        command_path="echo",
+        params={},
+        argv=["echo"],
+        argv_label="demo echo",
+        status="success",
+        exit_code=0,
+        stdout="old",
+        stderr="",
+        exception="",
+        duration_ms=0,
+    )
+    conn = sqlite3.connect(str(store.db_path))
+    conn.execute(
+        "UPDATE executions SET created_at = '2000-01-01 00:00:00' WHERE id = ?",
+        (old,),
+    )
+    conn.commit()
+    conn.close()
+
+    assert store.purge_executions(retention_days=0) == 0
+    assert store.purge_executions(retention_days=30) == 1
+    assert store.get_execution(old) is None
+    assert store.get_execution(keep) is not None

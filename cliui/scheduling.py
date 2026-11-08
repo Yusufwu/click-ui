@@ -7,7 +7,6 @@ This module deliberately does not import Flask: the same service powers
 
 from __future__ import annotations
 
-import json
 import typing as t
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,7 +19,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from cliui.execute.runner import execute_command
 from cliui.model import AppEntry, CommandInfo
-from cliui.storage.repo import Store
+from cliui.storage.repo import Store, schedule_items
 
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -182,22 +181,6 @@ def resolve_node(entry: AppEntry, command_path: str) -> t.Optional[CommandInfo]:
     return None
 
 
-def _json_list(text: t.Optional[str]) -> t.List[str]:
-    try:
-        value = json.loads(text or "[]")
-    except json.JSONDecodeError:
-        return []
-    return [str(item) for item in value] if isinstance(value, list) else []
-
-
-def _json_dict(text: t.Optional[str]) -> t.Dict[str, t.Any]:
-    try:
-        value = json.loads(text or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def run_schedule_once(
     store: Store,
     apps_by_name: t.Dict[str, AppEntry],
@@ -206,17 +189,14 @@ def run_schedule_once(
     max_output_chars: int = 200_000,
     wait_seconds: t.Optional[float] = 0.0,
 ) -> t.Tuple[str, t.Optional[int]]:
-    """Execute a schedule once and always persist an execution record."""
-    argv = _json_list(schedule.get("argv_json"))
-    params = _json_dict(schedule.get("params_json"))
-    argv_label = schedule.get("argv_label") or ""
+    """Execute every command in a schedule and persist one record per item."""
     user_id = int(schedule.get("created_by") or 0)
     username = str(schedule.get("created_by_name") or "")
-    app_name = str(schedule.get("app_name") or "")
-    command_path = str(schedule.get("command_path") or "")
     schedule_id = int(schedule.get("id") or 0)
+    items = schedule_items(schedule)
 
     def record(
+        item: t.Dict[str, t.Any],
         status: str,
         exit_code: t.Optional[int],
         stdout: str,
@@ -228,12 +208,12 @@ def run_schedule_once(
         return store.record_execution(
             user_id=user_id,
             username=username,
-            app=app_name,
+            app=str(item.get("app_name") or ""),
             command_id="",
-            command_path=command_path,
-            params=params,
+            command_path=str(item.get("command_path") or ""),
+            params=item.get("params") or {},
             argv=resolved_argv,
-            argv_label=argv_label,
+            argv_label=str(item.get("argv_label") or ""),
             status=status,
             exit_code=exit_code,
             stdout=stdout,
@@ -244,50 +224,67 @@ def run_schedule_once(
             schedule_id=schedule_id,
         )
 
-    entry = apps_by_name.get(app_name)
-    if entry is None:
-        execution_id = record(
-            "failed",
-            None,
-            "",
-            "",
-            f"应用未注册或已被移除: {app_name}",
-            0,
-            argv,
-        )
-        return "failed", execution_id
+    statuses: t.List[str] = []
+    last_execution_id: t.Optional[int] = None
+    for item in items:
+        app_name = str(item.get("app_name") or "")
+        command_path = str(item.get("command_path") or "")
+        argv = [str(arg) for arg in (item.get("argv") or [])]
+        entry = apps_by_name.get(app_name)
+        if entry is None:
+            last_execution_id = record(
+                item,
+                "failed",
+                None,
+                "",
+                "",
+                f"应用未注册或已被移除: {app_name}",
+                0,
+                argv,
+            )
+            statuses.append("failed")
+            continue
+        if resolve_node(entry, command_path) is None:
+            last_execution_id = record(
+                item,
+                "failed",
+                None,
+                "",
+                "",
+                f"命令不存在或已不可执行: {command_path}",
+                0,
+                argv,
+            )
+            statuses.append("failed")
+            continue
 
-    node = resolve_node(entry, command_path)
-    if node is None:
-        execution_id = record(
-            "failed",
-            None,
-            "",
-            "",
-            f"命令不存在或已不可执行: {command_path}",
-            0,
-            argv,
+        result = execute_command(
+            entry, argv, max_output_chars=max_output_chars, wait_seconds=wait_seconds
         )
-        return "failed", execution_id
+        exception = result.exception
+        if not exception and result.status in ("failed", "skipped"):
+            exception = result.message
+        last_execution_id = record(
+            item,
+            result.status,
+            result.exit_code,
+            result.stdout,
+            result.stderr,
+            exception,
+            result.duration_ms,
+            result.argv,
+        )
+        statuses.append(result.status)
 
-    result = execute_command(
-        entry, argv, max_output_chars=max_output_chars, wait_seconds=wait_seconds
-    )
-    exception = result.exception
-    if not exception and result.status == "failed":
-        exception = result.message
-    if result.status == "skipped":
-        exception = result.message
-    execution_id = record(
-        result.status,
-        result.exit_code,
-        result.stdout,
-        result.stderr,
-        exception,
-        result.duration_ms,
-        result.argv,
-    )
-    return result.status, execution_id
+    if "failed" in statuses:
+        overall = "failed"
+    elif "skipped" in statuses:
+        overall = "skipped"
+    elif statuses:
+        overall = "success"
+    else:
+        overall = "failed"
+    return overall, last_execution_id
 
 
 class SchedulerService:

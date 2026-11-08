@@ -8,8 +8,10 @@ import typing as t
 from urllib.parse import urlencode
 
 from cliui.model import AppEntry, CommandInfo
+from cliui.scheduling import CRON_PRESETS, DEFAULT_TIMEZONE
 from cliui.schema.form import build_command_form
 from cliui.schema.nav import build_nav, command_url
+from cliui.storage.repo import schedule_items
 
 STATUS_LABELS = {
     "success": "成功",
@@ -269,6 +271,7 @@ def build_records_page(
                 {"label": "失败", "value": "failed"},
                 {"label": "预览", "value": "preview"},
                 {"label": "已跳过", "value": "skipped"},
+                {"label": "执行中", "value": "running"},
             ],
         },
         {
@@ -372,8 +375,69 @@ def build_overview_page(
     current_app: t.Optional[AppEntry],
     user: t.Dict[str, t.Any],
     queue_count: int,
+    *,
+    query: str = "",
+    favorites: t.Optional[t.Set[t.Tuple[str, str]]] = None,
+    recent: t.Optional[t.List[t.Dict[str, t.Any]]] = None,
 ) -> t.Dict[str, t.Any]:
-    """Static overview of every registered command with a one-line summary."""
+    """Overview of every registered command with search, favorites and recents."""
+    favorites = favorites or set()
+    recent = recent or []
+    keyword = query.strip().lower()
+
+    lookup: t.Dict[t.Tuple[str, str], t.Tuple[AppEntry, CommandInfo]] = {}
+    for entry in apps:
+        for node in entry.nodes.values():
+            if node is not entry.root and not node.hidden:
+                lookup[(entry.name, node.display_path())] = (entry, node)
+
+    def item_html(
+        entry: AppEntry,
+        node: CommandInfo,
+    ) -> str:
+        if node.is_group:
+            kind, kind_cls = "命令组", "is-group"
+        else:
+            kind, kind_cls = "可执行", "is-run"
+        desc = _one_line_help(node) or "（暂无说明）"
+        indent = max(0, node.level - 1) * 16
+        is_fav = (entry.name, node.display_path()) in favorites
+        label = "★" if is_fav else "☆"
+        title = "取消收藏" if is_fav else "收藏该命令"
+        fav_html = (
+            '<form method="post" action="/overview/favorite" class="cliui-overview-fav">'
+            f'<input type="hidden" name="app" value="{esc(entry.name)}">'
+            f'<input type="hidden" name="q" value="{esc(query)}">'
+            f'<input type="hidden" name="path" value="{esc(node.display_path())}">'
+            f'<button type="submit" title="{title}" class="cliui-overview-star'
+            f'{"" if is_fav else " is-empty"}">{label}</button></form>'
+        )
+        return f"""
+<div class="cliui-overview-item">
+  <a class="cliui-overview-path" href="{esc(command_url(entry.name, node.node_id))}"
+     style="padding-left:{indent}px">{esc(node.display_path())}</a>
+  <span class="cliui-overview-kind {kind_cls}">{kind}</span>
+  <span class="cliui-overview-desc">{esc(desc)}</span>
+  {fav_html}
+</div>"""
+
+    def chips(entries: t.List[t.Tuple[AppEntry, CommandInfo]]) -> str:
+        if not entries:
+            return ""
+        links = "".join(
+            f'<a class="cliui-overview-chip" href="{esc(command_url(entry.name, node.node_id))}">'
+            f"{esc(node.display_path())}</a>"
+            for entry, node in entries
+        )
+        return links
+
+    fav_links = [lookup[key] for key in sorted(favorites) if key in lookup]
+    recent_links = [
+        lookup[(row["app"], row["command_path"])]
+        for row in recent
+        if (row.get("app"), row.get("command_path")) in lookup
+    ]
+
     sections: t.List[str] = []
     total_commands = 0
     total_executable = 0
@@ -383,32 +447,19 @@ def build_overview_page(
             for node in entry.nodes.values()
             if node is not entry.root and not node.hidden
         ]
+        if keyword:
+            nodes = [
+                node
+                for node in nodes
+                if keyword in node.display_path().lower()
+                or keyword in _one_line_help(node).lower()
+            ]
         nodes.sort(key=lambda node: node.display_path())
         total_commands += len(nodes)
         total_executable += sum(1 for node in nodes if node.executable)
-
-        rows: t.List[str] = []
-        for node in nodes:
-            if node.is_group and node.executable:
-                kind = "命令组 · 可运行"
-                kind_cls = "is-group"
-            elif node.is_group:
-                kind = "命令组"
-                kind_cls = "is-group"
-            else:
-                kind = "可执行"
-                kind_cls = "is-run"
-            desc = _one_line_help(node) or "（暂无说明）"
-            indent = max(0, node.level - 1) * 16
-            rows.append(
-                f"""
-<div class="cliui-overview-item">
-  <a class="cliui-overview-path" href="{esc(command_url(entry.name, node.node_id))}"
-     style="padding-left:{indent}px">{esc(node.display_path())}</a>
-  <span class="cliui-overview-kind {kind_cls}">{kind}</span>
-  <span class="cliui-overview-desc">{esc(desc)}</span>
-</div>"""
-            )
+        if keyword and not nodes:
+            continue
+        rows = [item_html(entry, node) for node in nodes]
         body_html = "".join(rows) or (
             '<div class="cliui-overview-empty">该应用还没有可展示的命令。</div>'
         )
@@ -426,23 +477,54 @@ def build_overview_page(
     </div>
   </div>
   <div class="cliui-overview-list-head">
-    <span>命令路径（点击进入）</span><span>类型</span><span>一句话说明</span>
+    <span>命令路径（点击进入）</span><span>类型</span><span>一句话说明</span><span></span>
   </div>
   <div class="cliui-overview-list">{body_html}</div>
 </section>"""
         )
 
-    if not sections:
+    if keyword and not sections:
+        sections.append(
+            f'<div class="cliui-overview-empty">没有匹配 “{esc(query)}” 的命令。'
+            '<a class="cliui-overview-open" href="/overview">清除搜索</a></div>'
+        )
+    elif not sections:
         sections.append(
             '<div class="cliui-overview-empty">还没有注册任何 Click 应用。</div>'
         )
 
+    extras: t.List[str] = []
+    if fav_links:
+        extras.append(
+            f"""
+<section class="cliui-overview-extras">
+  <div class="cliui-overview-extra-title">我的收藏</div>
+  <div class="cliui-overview-chips">{chips(fav_links)}</div>
+</section>"""
+        )
+    if recent_links:
+        extras.append(
+            f"""
+<section class="cliui-overview-extras">
+  <div class="cliui-overview-extra-title">最近使用</div>
+  <div class="cliui-overview-chips">{chips(recent_links)}</div>
+</section>"""
+        )
+
     content = f"""
-<div class="cliui-overview-summary">
-  <span class="cliui-meta-chip">应用 {len(apps)}</span>
-  <span class="cliui-meta-chip">命令 {total_commands}</span>
-  <span class="cliui-meta-chip">可执行 {total_executable}</span>
+<div class="cliui-overview-toolbar">
+  <form method="get" action="/overview" class="cliui-overview-search">
+    <input type="text" name="q" value="{esc(query)}" placeholder="搜索命令路径或说明">
+    <button type="submit">搜索</button>
+    {f'<a class="cliui-overview-open" href="/overview">清除</a>' if query else ''}
+  </form>
+  <div class="cliui-overview-summary">
+    <span class="cliui-meta-chip">应用 {len(apps)}</span>
+    <span class="cliui-meta-chip">命令 {total_commands}</span>
+    <span class="cliui-meta-chip">可执行 {total_executable}</span>
+  </div>
 </div>
+{"".join(extras)}
 {"".join(sections)}
 """
     return {
@@ -453,8 +535,8 @@ def build_overview_page(
             _topbar(apps, current_app, user, queue_count, "overview"),
             _hero_simple(
                 "命令总览",
-                "所有已注册 Click 应用的命令树。点击任意命令直接进入控制台并预选该命令；"
-                "点击左上角 CLI 标记可随时回到这里。",
+                "所有已注册 Click 应用的命令树。支持搜索、收藏和最近使用；"
+                "点击任意命令直接进入控制台并预选该命令。点击左上角 CLI 标记可随时回到这里。",
             ),
             {"type": "tpl", "tpl": content},
         ],
@@ -636,7 +718,7 @@ def build_schedules_page(
     columns: t.List[t.Dict[str, t.Any]] = [
         {"name": "id", "label": "#", "width": 70},
         {"name": "app_name", "label": "应用", "width": 110},
-        {"name": "command_path", "label": "命令", "minWidth": 200},
+        {"name": "command_summary", "label": "命令", "minWidth": 220},
         {
             "type": "tpl",
             "name": "plan",
@@ -668,8 +750,16 @@ def build_schedules_page(
         {
             "type": "operation",
             "label": "操作",
-            "width": 260,
+            "width": 300,
             "buttons": [
+                {
+                    "type": "button",
+                    "label": "详情",
+                    "level": "link",
+                    "actionType": "url",
+                    "blank": False,
+                    "url": "/schedules/${id}",
+                },
                 {
                     "type": "button",
                     "label": "立即运行",
@@ -696,6 +786,14 @@ def build_schedules_page(
                     "api": {"method": "post", "url": "/api/schedules/${id}/toggle?enabled=1"},
                     "reload": "cliui-schedules",
                     "visibleOn": "!this.enabled",
+                },
+                {
+                    "type": "button",
+                    "label": "复制",
+                    "level": "link",
+                    "actionType": "ajax",
+                    "api": {"method": "post", "url": "/api/schedules/${id}/duplicate"},
+                    "reload": "cliui-schedules",
                 },
                 {
                     "type": "button",
@@ -774,6 +872,238 @@ def build_schedules_page(
     }
 
 
+def _find_command_node(entry: AppEntry, command_path: str) -> t.Optional[CommandInfo]:
+    for node in entry.nodes.values():
+        if node.executable and node.display_path() == command_path:
+            return node
+    return None
+
+
+def build_schedule_detail_page(
+    schedule: t.Dict[str, t.Any],
+    items: t.List[t.Dict[str, t.Any]],
+    executions: t.List[t.Dict[str, t.Any]],
+    apps: t.List[AppEntry],
+    current_app: t.Optional[AppEntry],
+    user: t.Dict[str, t.Any],
+    queue_count: int,
+) -> t.Dict[str, t.Any]:
+    schedule_id = int(schedule.get("id") or 0)
+    enabled = bool(schedule.get("enabled"))
+    plan_text = schedule.get("cron") or schedule.get("run_at") or "（未设置）"
+    last_status = str(schedule.get("last_status") or "")
+    status_text = SCHEDULE_STATUS_LABELS.get(last_status, "从未运行")
+
+    item_rows: t.List[str] = []
+    for index, item in enumerate(items):
+        app_name = str(item.get("app_name") or "")
+        command_path = str(item.get("command_path") or "")
+        argv_label = str(item.get("argv_label") or "") or " ".join(
+            str(arg) for arg in (item.get("argv") or [])
+        )
+        entry = next((candidate for candidate in apps if candidate.name == app_name), None)
+        node = _find_command_node(entry, command_path) if entry else None
+        link = (
+            f'<a class="cliui-schedule-item-link" href="{esc(command_url(entry.name, node.node_id))}">打开命令</a>'
+            if entry and node
+            else '<span class="cliui-schedule-item-tip">命令已不可用</span>'
+        )
+        remove = (
+            f'<form method="post" action="/schedules/{schedule_id}/items/{index}/remove"'
+            ' class="cliui-schedule-item-remove">'
+            f'<button type="submit" title="从该计划移除这条命令">移除</button></form>'
+            if len(items) > 1
+            else '<span class="cliui-schedule-item-tip">至少保留一条</span>'
+        )
+        item_rows.append(
+            f"""
+<div class="cliui-schedule-item">
+  <span class="cliui-schedule-item-index">{index + 1}</span>
+  <div class="cliui-schedule-item-body">
+    <div class="cliui-schedule-item-path">{esc(app_name)} · {esc(command_path)}</div>
+    <div class="cliui-schedule-item-argv">{esc(argv_label)}</div>
+  </div>
+  {link}
+  {remove}
+</div>"""
+        )
+
+    items_html = (
+        "".join(item_rows)
+        or '<div class="cliui-overview-empty">该计划还没有命令。</div>'
+    )
+
+    exec_rows: t.List[str] = []
+    for record in executions:
+        record_status = str(record.get("status") or "")
+        exec_rows.append(
+            f"""<tr>
+  <td><a href="/records/{record.get('id')}">#{record.get('id')}</a></td>
+  <td><span class="cliui-result-status cliui-status-{esc(record_status)}">"""
+            f'<span class="cliui-result-dot"></span>{esc(STATUS_LABELS.get(record_status, record_status))}'
+            f"</span></td>"
+            f"<td>{esc(record.get('exit_code'))}</td>"
+            f"<td>{esc(record.get('duration_ms'))} ms</td>"
+            f"<td>{esc(record.get('created_at'))}</td>"
+            "</tr>"
+        )
+    exec_html = (
+        '<table class="cliui-schedule-runs"><thead><tr><th>#</th><th>状态</th>'
+        "<th>退出码</th><th>耗时</th><th>时间</th></tr></thead><tbody>"
+        + "".join(exec_rows)
+        + "</tbody></table>"
+        if exec_rows
+        else '<div class="cliui-overview-empty">还没有执行记录。可以点击“立即运行”查看效果。</div>'
+    )
+
+    summary_html = f"""
+<div class="cliui-schedule-summary">
+  <div class="cliui-schedule-summary-row">
+    <span class="cliui-result-status cliui-status-{esc('success' if enabled else 'running')}">
+      <span class="cliui-result-dot"></span>{'已启用' if enabled else '已暂停'}
+    </span>
+    <span class="cliui-detail-item">计划 <b>{esc(plan_text)}</b></span>
+    <span class="cliui-detail-item">时区 <b>{esc(schedule.get('timezone'))}</b></span>
+    <span class="cliui-detail-item">停机补跑 <b>{'开启' if schedule.get('catch_up') else '关闭'}</b></span>
+  </div>
+  <div class="cliui-schedule-summary-row">
+    <span class="cliui-detail-item">下次运行 <b>{esc(schedule.get('next_run_at') or '-')}</b></span>
+    <span class="cliui-detail-item">上次运行 <b>{esc(schedule.get('last_run_at') or '-')}</b></span>
+    <span class="cliui-detail-item">上次结果 <b>{esc(status_text)}</b></span>
+    <span class="cliui-detail-item">创建人 <b>{esc(schedule.get('created_by_name'))}</b></span>
+  </div>
+</div>
+"""
+
+    actions_html = f"""
+<div class="cliui-schedule-actions">
+  <form method="post" action="/schedules/{schedule_id}/run">
+    <button type="submit" class="cliui-action-btn is-primary">立即运行</button>
+  </form>
+  <form method="post" action="/schedules/{schedule_id}/toggle">
+    <input type="hidden" name="enabled" value="{'0' if enabled else '1'}">
+    <button type="submit" class="cliui-action-btn">{'暂停' if enabled else '启用'}</button>
+  </form>
+  <form method="post" action="/schedules/{schedule_id}/duplicate">
+    <button type="submit" class="cliui-action-btn">复制为新计划</button>
+  </form>
+  <a class="cliui-action-link" href="/schedules">返回列表</a>
+</div>
+"""
+
+    append_hint = ""
+    if items:
+        entry = next(
+            (candidate for candidate in apps if candidate.name == items[0].get("app_name")),
+            None,
+        )
+        node = _find_command_node(entry, str(items[0].get("command_path") or "")) if entry else None
+        console_url = "/?" + urlencode(
+            {"app": items[0].get("app_name") or "", "cmd": node.node_id if node else ""}
+        )
+        append_hint = (
+            '<div class="cliui-schedule-hint">在控制台填好命令参数后，展开“定时设置”，'
+            '选择本计划并点击“追加到已有计划”即可增加一条命令；也可以'
+            f'<a class="cliui-overview-open" href="{esc(console_url)}">从当前命令继续</a>。</div>'
+        )
+
+    edit_form = {
+        "type": "form",
+        "mode": "horizontal",
+        "labelWidth": 170,
+        "submitOnChange": False,
+        "data": {
+            "trigger_type": "once" if schedule.get("run_at") else "cron",
+            "cron": schedule.get("cron") or "",
+            "cron_preset": "",
+            "run_at": schedule.get("run_at") or "",
+            "timezone": schedule.get("timezone") or DEFAULT_TIMEZONE,
+            "catch_up": bool(schedule.get("catch_up")),
+        },
+        "body": [
+            {
+                "type": "radios",
+                "name": "trigger_type",
+                "label": "触发方式",
+                "options": [
+                    {"label": "周期（Cron）", "value": "cron"},
+                    {"label": "单次", "value": "once"},
+                ],
+            },
+            {
+                "type": "input-text",
+                "name": "cron",
+                "label": "Cron 表达式",
+                "placeholder": "0 2 * * *",
+            },
+            {
+                "type": "select",
+                "name": "cron_preset",
+                "label": "常用预设",
+                "clearable": True,
+                "options": [
+                    {"label": label, "value": expression}
+                    for label, expression in CRON_PRESETS
+                ],
+            },
+            {
+                "type": "input-text",
+                "name": "run_at",
+                "label": "单次时间",
+                "placeholder": "2026-11-08 09:00:00",
+            },
+            {
+                "type": "input-text",
+                "name": "timezone",
+                "label": "时区（IANA）",
+                "placeholder": DEFAULT_TIMEZONE,
+            },
+            {
+                "type": "switch",
+                "name": "catch_up",
+                "label": "停机补跑",
+                "description": "调度器停机期间错过的触发会记为 missed；开启后最多补跑一次。",
+            },
+        ],
+        "actions": [
+            {
+                "type": "submit",
+                "label": "保存计划",
+                "level": "primary",
+                "api": {"method": "post", "url": f"/api/schedules/{schedule_id}/edit"},
+                "redirect": f"/schedules/{schedule_id}",
+            },
+        ],
+    }
+
+    return {
+        "type": "page",
+        "title": "",
+        "className": "cliui-page cliui-wide-page",
+        "body": [
+            _topbar(apps, current_app, user, queue_count, "schedules"),
+            _hero_simple(
+                f"定时任务 #{schedule_id}",
+                "一个计划可以包含多条命令，每次触发会按顺序执行并分别写入执行记录；"
+                "修改计划时间后立即生效，复制计划可以复用同一组命令。",
+            ),
+            {"type": "tpl", "tpl": summary_html + actions_html},
+            {"type": "panel", "title": "计划设置", "body": [edit_form]},
+            {
+                "type": "panel",
+                "title": f"命令列表（{len(items)} 条）",
+                "body": [
+                    {"type": "tpl", "tpl": f'<div class="cliui-schedule-items">{items_html}</div>'},
+                    {"type": "tpl", "tpl": append_hint} if append_hint else _alert(
+                        "info", "该计划还没有命令，请到控制台创建命令后追加。"
+                    ),
+                ],
+            },
+            {"type": "panel", "title": "最近执行", "body": [{"type": "tpl", "tpl": exec_html}]},
+        ],
+    }
+
+
 def _static_text(label: str, value: t.Any, pre: bool = True) -> t.Dict[str, t.Any]:
     return {
         "type": "static",
@@ -826,6 +1156,24 @@ def build_record_detail_page(
         "type": "panel",
         "title": f"执行记录 #{record.get('id')}",
         "body": [
+            *(
+                [
+                    _alert(
+                        "info",
+                        "该命令正在后台执行，结果尚未写入。可稍后刷新本页查看最终状态。",
+                    ),
+                    {
+                        "type": "button",
+                        "label": "刷新状态",
+                        "level": "primary",
+                        "actionType": "url",
+                        "blank": False,
+                        "url": f"/records/{record.get('id')}",
+                    },
+                ]
+                if status == "running"
+                else []
+            ),
             {
                 "type": "tpl",
                 "tpl": f"""

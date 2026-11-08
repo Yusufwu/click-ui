@@ -754,7 +754,7 @@ a.cliui-brand-mark:hover {
 .cliui-overview-list-head,
 .cliui-overview-item {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 110px minmax(240px, 1.2fr);
+  grid-template-columns: minmax(240px, 1fr) 100px minmax(220px, 1.2fr) 46px;
   gap: 12px;
   align-items: center;
 }
@@ -828,3 +828,292 @@ a.cliui-brand-mark:hover {
   color: var(--cliui-muted);
   font-size: 13px;
 }
+
+/* ------------------------------------------------------ overview additions */
+.cliui-overview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+.cliui-overview-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cliui-overview-search input[type="text"] {
+  width: min(420px, 60vw);
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--cliui-line);
+  background: var(--cliui-card);
+  font-size: 13px;
+  color: var(--cliui-ink);
+}
+
+.cliui-overview-search input[type="text"]:focus {
+  outline: none;
+  border-color: var(--cliui-primary);
+  box-shadow: 0 0 0 3px rgba(47, 107, 255, 0.12);
+}
+
+.cliui-overview-search button {
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(47, 107, 255, 0.25);
+  background: var(--cliui-primary);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cliui-overview-search button:hover {
+  filter: brightness(1.06);
+}
+
+.cliui-overview-extras {
+  margin-top: 14px;
+  padding: 14px 18px;
+  border-radius: var(--cliui-radius);
+  background: var(--cliui-card);
+  border: 1px solid var(--cliui-line);
+}
+
+.cliui-overview-extra-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.cliui-overview-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cliui-overview-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #d9e4f7;
+  background: #f7faff;
+  font-family: var(--cliui-mono);
+  font-size: 12px;
+  color: #33415c;
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.cliui-overview-chip:hover {
+  border-color: var(--cliui-primary);
+  color: var(--cliui-primary);
+}
+
+.cliui-overview-fav {
+  margin: 0;
+  justify-self: end;
+}
+
+.cliui-overview-star {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 4px;
+  color: #f0a500;
+  transition: transform 0.12s ease;
+}
+
+.cliui-overview-star.is-empty {
+  color: #b9c3d6;
+}
+
+.cliui-overview-star:hover {
+  transform: scale(1.15);
+}
+
+/* ------------------------------------------------------ schedule detail */
+.cliui-schedule-summary {
+  margin-top: 18px;
+  padding: 16px 20px;
+  border-radius: var(--cliui-radius);
+  background: var(--cliui-card);
+  border: 1px solid var(--cliui-line);
+}
+
+.cliui-schedule-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  margin-top: 6px;
+}
+
+.cliui-schedule-summary-row:first-child {
+  margin-top: 0;
+}
+
+.cliui-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.cliui-schedule-actions form {
+  margin: 0;
+}
+
+.cliui-action-btn {
+  padding: 7px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--cliui-line);
+  background: var(--cliui-card);
+  color: var(--cliui-ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cliui-action-btn:hover {
+  border-color: var(--cliui-primary);
+  color: var(--cliui-primary);
+}
+
+.cliui-action-btn.is-primary {
+  background: var(--cliui-primary);
+  border-color: var(--cliui-primary);
+  color: #fff;
+}
+
+.cliui-action-btn.is-primary:hover {
+  filter: brightness(1.06);
+  color: #fff;
+}
+
+.cliui-action-link {
+  font-size: 13px;
+  color: var(--cliui-muted);
+  text-decoration: none;
+}
+
+.cliui-action-link:hover {
+  color: var(--cliui-primary);
+  text-decoration: underline;
+}
+
+.cliui-schedule-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cliui-schedule-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #eef2f9;
+  background: #fbfcff;
+}
+
+.cliui-schedule-item-index {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #eaf1ff;
+  color: var(--cliui-primary);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cliui-schedule-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cliui-schedule-item-path {
+  font-family: var(--cliui-mono);
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.cliui-schedule-item-argv {
+  margin-top: 2px;
+  font-family: var(--cliui-mono);
+  font-size: 12px;
+  color: var(--cliui-muted);
+  word-break: break-word;
+}
+
+.cliui-schedule-item-link {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--cliui-primary);
+  text-decoration: none;
+}
+
+.cliui-schedule-item-link:hover {
+  text-decoration: underline;
+}
+
+.cliui-schedule-item-remove {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.cliui-schedule-item-remove button {
+  border: 1px solid #f1d6d6;
+  background: #fff5f5;
+  color: #b23b3b;
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.cliui-schedule-item-remove button:hover {
+  border-color: #d98c8c;
+}
+
+.cliui-schedule-item-tip {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--cliui-muted);
+}
+
+.cliui-schedule-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--cliui-muted);
+  line-height: 1.6;
+}
+
+.cliui-schedule-runs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cliui-schedule-runs th,
+.cliui-schedule-runs td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef2f9;
+}
+
+.cliui-schedule-runs th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cliui-muted);
+}
+

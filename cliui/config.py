@@ -45,6 +45,7 @@ class ServeConfig:
     secret_key: str = ""
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
+    retention_days: int = 0
     admin_password: t.Optional[str] = None
     debug: bool = False
     open_browser: bool = False
@@ -64,6 +65,7 @@ def build_config(
     secret_key: t.Optional[str] = None,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    retention_days: int = 0,
     admin_password: t.Optional[str] = None,
     debug: bool = False,
     open_browser: bool = False,
@@ -86,6 +88,7 @@ def build_config(
         secret_key=key,
         max_output_chars=max(1024, int(max_output_chars)),
         max_upload_bytes=max(1024, int(max_upload_bytes)),
+        retention_days=max(0, int(retention_days)),
         admin_password=admin_password or os.environ.get("CLIUI_ADMIN_PASSWORD"),
         debug=debug,
         open_browser=open_browser,

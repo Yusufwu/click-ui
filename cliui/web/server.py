@@ -6,10 +6,12 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import typing as t
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import (
     Flask,
@@ -38,9 +40,10 @@ from cliui.scheduling import (
     validate_schedule,
 )
 from cliui.schema.argv import argv_preview, parse_command
-from cliui.storage.repo import Store, summarize_params
+from cliui.storage.repo import Store, schedule_items, summarize_params
 from cliui.web.auth import api_login_required, load_user, login_required
 from cliui.web.pages import (
+    STATUS_LABELS,
     build_batch_detail_page,
     build_batches_page,
     build_error_page,
@@ -49,6 +52,7 @@ from cliui.web.pages import (
     build_record_detail_page,
     build_records_page,
     build_overview_page,
+    build_schedule_detail_page,
     build_schedules_page,
 )
 
@@ -250,6 +254,48 @@ def create_app(
             batch_index=batch_index,
         )
 
+    def run_in_background(
+        entry: AppEntry,
+        argv: t.List[str],
+        record_id: int,
+    ) -> None:
+        """Execute after the HTTP response; the record starts as ``running``."""
+
+        def worker() -> None:
+            try:
+                result = execute_command(
+                    entry, argv, max_output_chars=config.max_output_chars
+                )
+                exception_text = _exception_for_storage(result)
+            except Exception as exc:  # noqa: BLE001 - never lose the record
+                result = ExecutionResult(
+                    status="failed",
+                    exit_code=None,
+                    stdout="",
+                    stderr="",
+                    exception=f"{type(exc).__name__}: {exc}",
+                    duration_ms=0,
+                    argv=list(argv),
+                    message=f"{type(exc).__name__}: {exc}",
+                )
+                exception_text = result.exception
+            try:
+                store.update_execution_result(
+                    record_id,
+                    status=result.status,
+                    exit_code=result.exit_code,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    exception=exception_text,
+                    duration_ms=result.duration_ms,
+                )
+            except Exception:  # noqa: BLE001 - log and keep serving
+                app.logger.exception("后台执行结果写入失败 #%s", record_id)
+
+        threading.Thread(
+            target=worker, name=f"cliui-exec-{record_id}", daemon=True
+        ).start()
+
     def require_owned(row: t.Dict[str, t.Any]) -> None:
         if not g.user.get("is_admin") and row["user_id"] != g.user["id"]:
             abort(403)
@@ -356,8 +402,27 @@ def create_app(
     @login_required
     def overview_page():
         entry = pick_app(request.args.get("app"))
-        page = build_overview_page(entries, entry, g.user, queue_count())
+        page = build_overview_page(
+            entries,
+            entry,
+            g.user,
+            queue_count(),
+            query=request.args.get("q") or "",
+            favorites=store.favorite_commands(g.user["id"]),
+            recent=store.recent_commands(user_id=g.user["id"]),
+        )
         return render_page(page, "命令总览")
+
+    @app.post("/overview/favorite")
+    @login_required
+    def overview_favorite():
+        app_name = (request.form.get("app") or "").strip()
+        command_path = (request.form.get("path") or "").strip()
+        if app_name and command_path:
+            store.toggle_favorite(g.user["id"], app_name, command_path)
+        query = (request.form.get("q") or "").strip()
+        target = "/overview" + (f"?q={quote(query)}" if query else "")
+        return redirect(target)
 
     @app.get("/records")
     @login_required
@@ -397,6 +462,99 @@ def create_app(
         entry = pick_app(request.args.get("app"))
         page = build_schedules_page(entries, entry, g.user, queue_count())
         return render_page(page, "定时任务")
+
+    @app.get("/schedules/<int:schedule_id>")
+    @login_required
+    def schedule_detail(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return page_error("定时任务不存在", status=404)
+        require_schedule_owned(row)
+        items = schedule_items(row)
+        executions = store.schedule_executions(schedule_id)
+        entry = pick_app(row.get("app_name"))
+        page = build_schedule_detail_page(
+            row, items, executions, entries, entry, g.user, queue_count()
+        )
+        return render_page(page, f"定时任务 #{schedule_id}")
+
+    @app.post("/schedules/<int:schedule_id>/run")
+    @login_required
+    def schedule_run_form(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return page_error("定时任务不存在", status=404)
+        require_schedule_owned(row)
+        status, execution_id = run_schedule_once(
+            store,
+            apps_by_name,
+            row,
+            max_output_chars=config.max_output_chars,
+            wait_seconds=None,
+        )
+        store.mark_schedule_result(
+            schedule_id, status=status, execution_id=execution_id
+        )
+        return redirect(f"/schedules/{schedule_id}")
+
+    @app.post("/schedules/<int:schedule_id>/toggle")
+    @login_required
+    def schedule_toggle_form(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return page_error("定时任务不存在", status=404)
+        require_schedule_owned(row)
+        enabled = _truthy(request.values.get("enabled"))
+        next_value: t.Optional[str] = None
+        if enabled:
+            next_value = next_fire_for_schedule(row)
+            if next_value is None:
+                return page_error(
+                    "该单次任务的时间已过，无法启用", status=400, entry=pick_app(row.get("app_name"))
+                )
+        store.set_schedule_enabled(schedule_id, enabled, next_value)
+        sync_scheduler()
+        return redirect(f"/schedules/{schedule_id}")
+
+    @app.post("/schedules/<int:schedule_id>/duplicate")
+    @login_required
+    def schedule_duplicate_form(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return page_error("定时任务不存在", status=404)
+        require_schedule_owned(row)
+        next_value = next_fire_for_schedule(row)
+        if next_value is None:
+            return page_error(
+                "该单次任务的时间已过，请先编辑计划时间再复制",
+                status=400,
+                entry=pick_app(row.get("app_name")),
+            )
+        new_id = store.duplicate_schedule(
+            schedule_id,
+            created_by=g.user["id"],
+            created_by_name=g.user["username"],
+            next_run_at=next_value,
+        )
+        sync_scheduler()
+        if new_id is None:
+            return page_error("定时任务不存在", status=404)
+        return redirect(f"/schedules/{new_id}")
+
+    @app.post("/schedules/<int:schedule_id>/items/<int:index>/remove")
+    @login_required
+    def schedule_item_remove_form(schedule_id: int, index: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return page_error("定时任务不存在", status=404)
+        require_schedule_owned(row)
+        if store.remove_schedule_item(schedule_id, index) is None:
+            return page_error(
+                "无法移除：索引越界，或计划至少需要保留一条命令",
+                status=400,
+                entry=pick_app(row.get("app_name")),
+            )
+        return redirect(f"/schedules/{schedule_id}")
 
     @app.get("/batches/")
     @login_required
@@ -479,6 +637,44 @@ def create_app(
                 http_status=200,
             )
 
+        if _truthy(data.get("background")):
+            root_name = entry.root.name if entry.root else entry.name
+            record_id = store.record_execution(
+                user_id=g.user["id"],
+                username=g.user["username"],
+                app=entry.name,
+                command_id=node.node_id,
+                command_path=_command_label(node),
+                params=parsed.field_values,
+                argv=parsed.argv,
+                argv_label=argv_preview(root_name, parsed.argv),
+                status="running",
+                exit_code=None,
+                stdout="",
+                stderr="",
+                exception="",
+                duration_ms=0,
+            )
+            run_in_background(entry, parsed.argv, record_id)
+            running = ExecutionResult(
+                status="running",
+                exit_code=None,
+                stdout="",
+                stderr="",
+                exception="",
+                duration_ms=0,
+                argv=parsed.argv,
+                message="已在后台执行。长任务可以离开本页，稍后刷新执行记录查看结果。",
+            )
+            fields = result_fields_for_app(entry, running, node, record_id)
+            fields["result_status_label"] = "执行中（后台）"
+            fields["result_duration_label"] = "后台运行"
+            return _status_payload(
+                ok=True,
+                msg=f"已提交后台执行（记录 #{record_id}）",
+                data=fields,
+            )
+
         result = execute_command(
             entry, parsed.argv, max_output_chars=config.max_output_chars
         )
@@ -519,6 +715,30 @@ def create_app(
             item.pop("exception", None)
             item.pop("params_json", None)
         return jsonify({"status": 0, "msg": "", "data": {"items": items, "total": total}})
+
+    @app.get("/api/executions/<int:execution_id>")
+    @api_login_required
+    def api_execution_status(execution_id: int):
+        row = store.get_execution(execution_id)
+        if row is None:
+            return api_error("执行记录不存在", 404)
+        require_owned(row)
+        status = str(row.get("status") or "")
+        return _status_payload(
+            ok=True,
+            msg="后台执行中" if status == "running" else "执行已结束",
+            data={
+                "id": row["id"],
+                "status": status,
+                "status_label": STATUS_LABELS.get(status, status),
+                "exit_code": row.get("exit_code"),
+                "duration_ms": row.get("duration_ms"),
+                "stdout": row.get("stdout") or "",
+                "stderr": row.get("stderr") or "",
+                "exception": row.get("exception") or "",
+                "created_at": row.get("created_at"),
+            },
+        )
 
     @app.get("/api/batches")
     @api_login_required
@@ -876,8 +1096,19 @@ def create_app(
             app=app_name,
         )
         for item in items:
+            plan_items = schedule_items(item)
+            summary = str(item.get("command_path") or "")
+            if len(plan_items) > 1:
+                summary = f"{summary} · 共 {len(plan_items)} 条"
+            item["items_count"] = len(plan_items)
+            item["command_summary"] = summary
+            item["title"] = (
+                f"#{item['id']} {summary} · "
+                f"{item.get('cron') or item.get('run_at') or ''}".rstrip()
+            )
             item.pop("params_json", None)
             item.pop("argv_json", None)
+            item.pop("items_json", None)
         return jsonify({"status": 0, "msg": "", "data": {"items": items, "total": total}})
 
     @app.post("/api/schedules/<int:schedule_id>/run")
@@ -927,6 +1158,116 @@ def create_app(
             ok=True,
             msg="已启用" if enabled else "已暂停",
             data={"enabled": enabled, "next_run_at": next_value},
+        )
+
+    @app.post("/api/schedules/<int:schedule_id>/edit")
+    @api_login_required
+    def api_schedule_edit(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        data = _payload()
+        try:
+            cron, run_at, tz = _schedule_plan(data)
+        except ValueError as exc:
+            return api_error(str(exc))
+        next_value = next_fire_time(cron=cron, run_at=run_at, timezone=tz)
+        if next_value is None:
+            return api_error("该计划没有未来的触发时间，请修改运行时间")
+        if not store.update_schedule_plan(
+            schedule_id,
+            cron=cron,
+            run_at=run_at,
+            timezone=tz,
+            catch_up=_truthy(data.get("catch_up")),
+            next_run_at=next_value,
+        ):
+            return api_error("定时任务不存在", 404)
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg=f"计划已更新，下次运行 {next_value}",
+            data={"schedule_id": schedule_id, "next_run_at": next_value},
+        )
+
+    @app.post("/api/schedules/<int:schedule_id>/duplicate")
+    @api_login_required
+    def api_schedule_duplicate(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        next_value = next_fire_for_schedule(row)
+        if next_value is None:
+            return api_error("该单次任务的时间已过，请先编辑计划时间再复制")
+        new_id = store.duplicate_schedule(
+            schedule_id,
+            created_by=g.user["id"],
+            created_by_name=g.user["username"],
+            next_run_at=next_value,
+        )
+        if new_id is None:
+            return api_error("定时任务不存在", 404)
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg=f"已复制为定时任务 #{new_id}",
+            data={"schedule_id": new_id, "next_run_at": next_value},
+        )
+
+    @app.post("/api/schedules/<int:schedule_id>/items")
+    @api_login_required
+    def api_schedule_item_add(schedule_id: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        data = _payload()
+        entry = entry_for(data)
+        if entry is None:
+            return api_error("应用不存在", 404)
+        node = node_for(entry, data)
+        if node is None:
+            return api_error("命令不存在", 404)
+        parsed = parsed_for(entry, node, data)
+        if parsed.errors:
+            return _status_payload(
+                ok=False, msg="表单校验未通过", errors=parsed.errors
+            )
+        root_name = entry.root.name if entry.root else entry.name
+        item = {
+            "app_name": entry.name,
+            "command_path": _command_label(node),
+            "argv": parsed.argv,
+            "params": parsed.field_values,
+            "argv_label": argv_preview(root_name, parsed.argv),
+        }
+        items = store.add_schedule_item(schedule_id, item)
+        if items is None:
+            return api_error("定时任务不存在", 404)
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg=f"已向定时任务 #{schedule_id} 追加第 {len(items)} 条命令",
+            data={"schedule_id": schedule_id, "items_count": len(items)},
+        )
+
+    @app.delete("/api/schedules/<int:schedule_id>/items/<int:index>")
+    @api_login_required
+    def api_schedule_item_delete(schedule_id: int, index: int):
+        row = store.get_schedule(schedule_id)
+        if row is None:
+            return api_error("定时任务不存在", 404)
+        require_schedule_owned(row)
+        items = store.remove_schedule_item(schedule_id, index)
+        if items is None:
+            return api_error("无法移除：索引越界，或计划至少需要保留一条命令")
+        sync_scheduler()
+        return _status_payload(
+            ok=True,
+            msg=f"已移除，计划剩余 {len(items)} 条命令",
+            data={"schedule_id": schedule_id, "items_count": len(items)},
         )
 
     @app.delete("/api/schedules/<int:schedule_id>")

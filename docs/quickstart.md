@@ -115,7 +115,9 @@ directory.
 ## 5. Execute, queue, and batch
 
 **Run now** — fill the form and press **执行**. The result panel shows exit code, duration,
-stdout/stderr and a link to the full record.
+stdout/stderr and a link to the full record. Enable **后台执行** first when the command can take
+a long time: the request returns immediately, the record starts as 执行中 and is filled in when
+the command finishes (poll `GET /api/executions/<id>` if you need to watch it).
 
 **Later** — press **加入队列** instead. The command is stored without running. Open
 **记录队列**, reorder items with the arrow actions, then press **批量执行队列**. Each item
@@ -137,6 +139,17 @@ Open any command, fill its form, then fill the **定时设置** (schedule settin
 
 Press **预览未来 3 次触发** to confirm the plan, then **加入定时**. Creating a schedule does not
 execute the command immediately.
+
+### Multi-command plans, editing and copying
+
+- A schedule is a **plan** with one or more commands. Fill a second command's form, pick the
+  plan under **追加到已有计划** (Append to existing schedule), and press that button. Each
+  trigger runs the commands in order and writes one execution record per command.
+- The **定时任务** list shows `首条命令 · 共 N 条`; open **详情** to see every command, remove
+  one (at least one must remain), and edit the plan (cron / one-off time / time zone /
+  catch-up). Saving recomputes the next run immediately.
+- **复制** creates an independent copy of the plan, including its command list, so the same set
+  of commands can run on several different schedules.
 
 ### Scheduler process
 
@@ -184,6 +197,11 @@ data/
 
 Back up the whole directory. Passing `--data-dir` (or `CLIUI_DATA_DIR`) lets you keep separate
 console state per environment.
+
+Large stdout/stderr is zlib-compressed once it exceeds 8 KB, so it is still stored as plain text
+with a `cliui-gzip:` prefix and decoded transparently when read. To bound growth, pass
+`--retention-days N` to `cliui serve` and/or `cliui scheduler`: records older than N days are
+deleted on start-up (`0`, the default, keeps them forever).
 
 ## 9. Deploying behind a proxy
 

@@ -101,6 +101,10 @@ from a terminal, and wrapping every script in yet another bespoke admin page doe
   stderr and exception text.
 - Records are isolated per operator; administrators can filter and inspect all of them.
 - Failed runs, previews and every item of a batch are recorded separately.
+- Long output is zlib-compressed transparently once it exceeds 8 KB, and
+  `--retention-days N` prunes older records on start-up.
+- Press **Background run** to return immediately for long commands; the record starts as
+  `running` and can be polled with `GET /api/executions/<id>`.
 
 **Queue and batch execution**
 
@@ -121,12 +125,18 @@ from a terminal, and wrapping every script in yet another bespoke admin page doe
   single catch-up run.
 - Each fire is claimed atomically in SQLite, so multiple processes never run the same slot twice.
   Records are tagged with source `schedule` and link back to their schedule.
+- One schedule can hold several commands: append them from the form's **Append to existing
+  schedule** selector, and manage/remove them on the schedule detail page.
+- The detail page edits the plan (cron, one-off time, time zone, catch-up), and **Copy as new
+  schedule** reuses the same command list with its own plan.
 - Regular users manage only their own schedules; administrators can see every schedule.
 
 **Command overview**
 
 - `/overview` lists every command across all registered apps with a one-line summary. Clicking a
   command opens its form directly.
+- Search filters by path or description; ★ toggles favourites, and favourite/recent commands are
+  pinned as chips at the top.
 - Clicking the **CLI** badge in the top-left corner returns to the overview at any time.
 
 **Multi-app, multi-user**
@@ -249,6 +259,7 @@ Read the design notes in [docs/architecture.md](docs/architecture.md).
 | `--open/--no-open` | off | Open the browser after start |
 | `--scheduler/--no-scheduler` | off | Start the scheduler thread inside the web process (dev-friendly) |
 | `--scheduler-wait-seconds` | `0` | Seconds a scheduled fire waits for the execution lock before being recorded as `skipped` |
+| `--retention-days` | `0` | Delete execution records older than N days on start-up; `0` keeps everything |
 
 ### Environment variables
 
@@ -267,6 +278,7 @@ Read the design notes in [docs/architecture.md](docs/architecture.md).
 | `--db-path` | `<data-dir>/cliui.sqlite3` | Override the SQLite file |
 | `--max-output-chars` | `200000` | Maximum characters stored per stream |
 | `--scheduler-wait-seconds` | `0` | Seconds to wait for the execution lock before recording `skipped` |
+| `--retention-days` | `0` | Delete execution records older than N days on start-up; `0` keeps everything |
 
 `cliui scheduler` runs happily alongside the web console: schedules live in SQLite and each
 fire is claimed atomically through `next_run_at`, so only one process executes a given slot.

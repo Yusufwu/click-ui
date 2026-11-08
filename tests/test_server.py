@@ -188,6 +188,65 @@ def test_command_overview_lists_commands_and_brand_links_to_it(
     assert 'href=\\"/overview\\"' in page
 
 
+def test_overview_search_favorites_and_recent(admin_client, fixture_entry, store):
+    admin = store.get_user_by_name("admin")
+
+    response = admin_client.post(
+        "/overview/favorite",
+        data={"app": "fixture", "path": "echo", "q": ""},
+    )
+    assert response.status_code == 302
+    assert ("fixture", "echo") in store.favorite_commands(admin["id"])
+
+    page = admin_client.get("/overview").get_data(as_text=True)
+    assert "我的收藏" in page
+    assert "cliui-overview-star" in page
+
+    filtered = admin_client.get("/overview?q=readfile").get_data(as_text=True)
+    assert "readfile" in filtered
+    assert filtered.count("cliui-overview-item") == 1
+    assert "回显文本" not in filtered
+
+    response = admin_client.post(
+        "/overview/favorite",
+        data={"app": "fixture", "path": "echo", "q": ""},
+    )
+    assert response.status_code == 302
+    assert ("fixture", "echo") not in store.favorite_commands(admin["id"])
+
+
+def test_background_execution_is_pollable(admin_client, fixture_entry, store):
+    import time
+
+    data, _echo = payload(fixture_entry, "echo", text="background")
+    data["background"] = True
+    body = admin_client.post("/api/execute", json=data).get_json()
+    assert body["status"] == 0, body
+    result = body["data"]
+    assert result["result_status"] == "running"
+    assert result["result_status_label"] == "执行中（后台）"
+    record_id = result["result_record_id"]
+
+    polled = None
+    for _ in range(100):
+        polled = admin_client.get(f"/api/executions/{record_id}").get_json()
+        if polled["data"]["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert polled["status"] == 0, polled
+    assert polled["data"]["status"] == "success"
+    assert "leaf:background" in polled["data"]["stdout"]
+
+    record = store.get_execution(record_id)
+    assert record["status"] == "success"
+    assert record["trigger"] == "manual"
+
+    store.create_user("alice", "alicepass")
+    alice = admin_client.application.test_client()
+    alice.post("/login", data={"username": "alice", "password": "alicepass"})
+    assert alice.get(f"/api/executions/{record_id}").status_code == 403
+
+
 def test_preview_and_execute(admin_client, fixture_entry, store):
     data, echo = payload(fixture_entry, "echo", text="hi")
 

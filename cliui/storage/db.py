@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     argv_json TEXT NOT NULL,
     params_json TEXT NOT NULL DEFAULT '{}',
     argv_label TEXT NOT NULL DEFAULT '',
+    items_json TEXT NOT NULL DEFAULT '',
     cron TEXT,
     run_at TEXT,
     timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
@@ -81,6 +82,14 @@ CREATE TABLE IF NOT EXISTS schedules (
     last_run_at TEXT,
     last_status TEXT,
     last_execution_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS command_favorites (
+    user_id INTEGER NOT NULL,
+    app_name TEXT NOT NULL,
+    command_path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, app_name, command_path)
 );
 
 CREATE TABLE IF NOT EXISTS queue_items (
@@ -102,7 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_executions_user ON executions(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_executions_created ON executions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_executions_batch ON executions(batch_id, batch_index);
 CREATE INDEX IF NOT EXISTS idx_executions_command ON executions(command_path);
+CREATE INDEX IF NOT EXISTS idx_executions_target ON executions(app, command_path, id DESC);
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_owner ON schedules(created_by, id DESC);
 CREATE INDEX IF NOT EXISTS idx_queue_user ON queue_items(user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_batches_user ON batches(user_id, id DESC);
 """
@@ -112,6 +123,7 @@ CREATE INDEX IF NOT EXISTS idx_batches_user ON batches(user_id, id DESC);
 MIGRATIONS: t.List[t.Tuple[str, str, str]] = [
     ("executions", "trigger", "ALTER TABLE executions ADD COLUMN trigger TEXT NOT NULL DEFAULT 'manual'"),
     ("executions", "schedule_id", "ALTER TABLE executions ADD COLUMN schedule_id INTEGER"),
+    ("schedules", "items_json", "ALTER TABLE schedules ADD COLUMN items_json TEXT NOT NULL DEFAULT ''"),
 ]
 
 

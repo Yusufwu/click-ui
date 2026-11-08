@@ -10,10 +10,19 @@ import webbrowser
 import click
 
 from cliui import __version__
-from cliui.config import build_config
+from cliui.config import ServeConfig, build_config
 from cliui.registry import AppLoadError, load_app_entry, load_apps
 from cliui.scheduling import SchedulerService
 from cliui.storage.repo import Store
+
+
+def _purge_old_executions(store: Store, config: ServeConfig) -> None:
+    if config.retention_days <= 0:
+        return
+    removed = store.purge_executions(retention_days=config.retention_days)
+    click.echo(
+        f"已清理 {removed} 条超过 {config.retention_days} 天的执行记录"
+    )
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -47,6 +56,13 @@ def main() -> None:
 @click.option("--debug/--no-debug", default=False, help="启用 Flask 调试模式")
 @click.option("--open/--no-open", "open_browser", default=False, help="启动后打开浏览器")
 @click.option(
+    "--retention-days",
+    default=0,
+    type=int,
+    show_default=True,
+    help="执行记录保留天数；0 表示永久保留。启动时清理更早的记录（输出已压缩存储）",
+)
+@click.option(
     "--scheduler/--no-scheduler",
     "run_scheduler",
     default=False,
@@ -71,6 +87,7 @@ def serve_command(
     max_upload_mb: int,
     debug: bool,
     open_browser: bool,
+    retention_days: int,
     run_scheduler: bool,
     scheduler_wait_seconds: float,
 ) -> None:
@@ -99,6 +116,7 @@ def serve_command(
         secret_key=secret_key,
         max_output_chars=max_output_chars,
         max_upload_bytes=max_upload_mb * 1024 * 1024,
+        retention_days=retention_days,
         admin_password=admin_password,
         debug=debug,
         open_browser=open_browser,
@@ -107,6 +125,7 @@ def serve_command(
     created, password = store.ensure_admin(
         config.admin_password or secrets.token_urlsafe(12)
     )
+    _purge_old_executions(store, config)
     if created:
         click.echo("")
         click.echo("已创建管理员账号：")
@@ -177,12 +196,20 @@ def serve_command(
     show_default=True,
     help="等待执行锁的秒数，超时记为 skipped",
 )
+@click.option(
+    "--retention-days",
+    default=0,
+    type=int,
+    show_default=True,
+    help="执行记录保留天数；0 表示永久保留。启动时清理更早的记录",
+)
 def scheduler_command(
     specs: tuple,
     data_dir: str | None,
     db_path: str | None,
     max_output_chars: int,
     scheduler_wait_seconds: float,
+    retention_days: int,
 ) -> None:
     """启动独立的定时调度进程（生产环境推荐）。
 
@@ -190,9 +217,13 @@ def scheduler_command(
     也可以像 serve 一样用 module:attr 或 path/to/file.py:attr 显式指定。
     """
     config = build_config(
-        data_dir=data_dir, db_path=db_path, max_output_chars=max_output_chars
+        data_dir=data_dir,
+        db_path=db_path,
+        max_output_chars=max_output_chars,
+        retention_days=retention_days,
     )
     store = Store(config.db_path)
+    _purge_old_executions(store, config)
 
     if specs:
         try:

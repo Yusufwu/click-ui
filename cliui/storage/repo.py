@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -9,13 +10,100 @@ import os
 import secrets
 import sqlite3
 import typing as t
+import zlib
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from cliui.storage.db import connect, init_db
 
 PASSWORD_ITERATIONS = 200_000
+COMPRESS_MARKER = "cliui-gzip:"
+COMPRESS_THRESHOLD = 8192
+
+
+def encode_output(text: t.Optional[str]) -> str:
+    """Compress large stdout/stderr while keeping the column a plain TEXT."""
+    value = text or ""
+    if len(value) < COMPRESS_THRESHOLD:
+        return value
+    packed = base64.b64encode(zlib.compress(value.encode("utf-8"), 6)).decode("ascii")
+    return COMPRESS_MARKER + packed
+
+
+def decode_output(text: t.Optional[str]) -> str:
+    value = text or ""
+    if not value.startswith(COMPRESS_MARKER):
+        return value
+    try:
+        raw = zlib.decompress(base64.b64decode(value[len(COMPRESS_MARKER):]))
+    except Exception:
+        return value
+    return raw.decode("utf-8", errors="replace")
+
+
+def _decode_row(row: t.Dict[str, t.Any]) -> t.Dict[str, t.Any]:
+    if "stdout" in row:
+        row["stdout"] = decode_output(row["stdout"])
+    if "stderr" in row:
+        row["stderr"] = decode_output(row["stderr"])
+    return row
+
+
+def schedule_items(row: t.Dict[str, t.Any]) -> t.List[t.Dict[str, t.Any]]:
+    """Return a schedule's commands as a list of item dictionaries.
+
+    Older rows only have the single ``argv_json`` / ``command_path`` columns, so
+    they are normalized into a one-item list.
+    """
+    text = row.get("items_json") or ""
+    if text:
+        try:
+            items = json.loads(text)
+        except json.JSONDecodeError:
+            items = []
+        if isinstance(items, list) and items:
+            return [item for item in items if isinstance(item, dict)]
+    try:
+        argv = json.loads(row.get("argv_json") or "[]")
+    except json.JSONDecodeError:
+        argv = []
+    try:
+        params = json.loads(row.get("params_json") or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    return [
+        {
+            "app_name": row.get("app_name") or "",
+            "command_path": row.get("command_path") or "",
+            "argv": argv if isinstance(argv, list) else [],
+            "params": params if isinstance(params, dict) else {},
+            "argv_label": row.get("argv_label") or "",
+        }
+    ]
+
+
+def _write_items(
+    conn: sqlite3.Connection, schedule_id: int, items: t.List[t.Dict[str, t.Any]]
+) -> None:
+    first = items[0]
+    conn.execute(
+        """
+        UPDATE schedules SET items_json = ?, app_name = ?, command_path = ?,
+            argv_json = ?, params_json = ?, argv_label = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(items, ensure_ascii=False),
+            first.get("app_name") or "",
+            first.get("command_path") or "",
+            json.dumps(first.get("argv") or [], ensure_ascii=False),
+            json.dumps(first.get("params") or {}, ensure_ascii=False),
+            first.get("argv_label") or "",
+            now_str(),
+            schedule_id,
+        ),
+    )
 
 
 def now_str() -> str:
@@ -174,8 +262,8 @@ class Store:
                     argv_label,
                     status,
                     exit_code,
-                    stdout,
-                    stderr,
+                    encode_output(stdout),
+                    encode_output(stderr),
                     exception,
                     duration_ms,
                     batch_id,
@@ -190,7 +278,7 @@ class Store:
     def get_execution(self, execution_id: int) -> t.Optional[t.Dict[str, t.Any]]:
         with self._db() as conn:
             row = conn.execute("SELECT * FROM executions WHERE id = ?", (execution_id,)).fetchone()
-            return dict(row) if row else None
+            return _decode_row(dict(row)) if row else None
 
     def list_executions(
         self,
@@ -233,7 +321,102 @@ class Store:
                 f"SELECT * FROM executions{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
                 params + [per_page, (page - 1) * per_page],
             ).fetchall()
-            return [dict(row) for row in rows], int(total)
+            return [_decode_row(dict(row)) for row in rows], int(total)
+
+    def update_execution_result(
+        self,
+        execution_id: int,
+        *,
+        status: str,
+        exit_code: t.Optional[int],
+        stdout: str,
+        stderr: str,
+        exception: str,
+        duration_ms: int,
+    ) -> None:
+        """Fill in the result of an execution that started as ``running``."""
+        with self._db() as conn:
+            conn.execute(
+                """
+                UPDATE executions SET status = ?, exit_code = ?, stdout = ?, stderr = ?,
+                    exception = ?, duration_ms = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    exit_code,
+                    encode_output(stdout),
+                    encode_output(stderr),
+                    exception,
+                    duration_ms,
+                    execution_id,
+                ),
+            )
+
+    def purge_executions(self, *, retention_days: int) -> int:
+        """Delete execution records older than ``retention_days``."""
+        if retention_days <= 0:
+            return 0
+        cutoff = (datetime.now() - timedelta(days=retention_days)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with self._db() as conn:
+            cursor = conn.execute(
+                "DELETE FROM executions WHERE created_at < ?", (cutoff,)
+            )
+            return cursor.rowcount
+
+    def recent_commands(self, *, user_id: int, limit: int = 5) -> t.List[t.Dict[str, t.Any]]:
+        limit = max(1, min(20, int(limit)))
+        with self._db() as conn:
+            rows = conn.execute(
+                """
+                SELECT app, command_path, MAX(id) AS last_id
+                FROM executions
+                WHERE user_id = ?
+                GROUP BY app, command_path
+                ORDER BY last_id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    # ---------------------------------------------------------- favorites
+    def favorite_commands(self, user_id: int) -> t.Set[t.Tuple[str, str]]:
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT app_name, command_path FROM command_favorites WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            return {(row["app_name"], row["command_path"]) for row in rows}
+
+    def toggle_favorite(self, user_id: int, app_name: str, command_path: str) -> bool:
+        with self._db() as conn:
+            exists = conn.execute(
+                """
+                SELECT 1 FROM command_favorites
+                WHERE user_id = ? AND app_name = ? AND command_path = ?
+                """,
+                (user_id, app_name, command_path),
+            ).fetchone()
+            if exists:
+                conn.execute(
+                    """
+                    DELETE FROM command_favorites
+                    WHERE user_id = ? AND app_name = ? AND command_path = ?
+                    """,
+                    (user_id, app_name, command_path),
+                )
+                return False
+            conn.execute(
+                """
+                INSERT INTO command_favorites (user_id, app_name, command_path, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, app_name, command_path, now_str()),
+            )
+            return True
 
     # ---------------------------------------------------------------- queue
     def queue_count(self, user_id: int) -> int:
@@ -458,22 +641,34 @@ class Store:
         created_by: int,
         created_by_name: str,
         next_run_at: t.Optional[str],
+        items: t.Optional[t.List[t.Dict[str, t.Any]]] = None,
     ) -> int:
+        payload = items or [
+            {
+                "app_name": app_name,
+                "command_path": command_path,
+                "argv": argv,
+                "params": params,
+                "argv_label": argv_label,
+            }
+        ]
+        first = payload[0]
         with self._db() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO schedules
-                (app_name, command_path, argv_json, params_json, argv_label, cron, run_at,
-                 timezone, catch_up, enabled, created_by, created_by_name, created_at,
-                 updated_at, next_run_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (app_name, command_path, argv_json, params_json, argv_label, items_json,
+                 cron, run_at, timezone, catch_up, enabled, created_by, created_by_name,
+                 created_at, updated_at, next_run_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    app_name,
-                    command_path,
-                    json.dumps(argv, ensure_ascii=False),
-                    json.dumps(params, ensure_ascii=False),
-                    argv_label,
+                    first.get("app_name") or app_name,
+                    first.get("command_path") or command_path,
+                    json.dumps(first.get("argv") or argv, ensure_ascii=False),
+                    json.dumps(first.get("params") or params, ensure_ascii=False),
+                    first.get("argv_label") or argv_label,
+                    json.dumps(payload, ensure_ascii=False),
                     cron,
                     run_at,
                     timezone,
@@ -494,6 +689,20 @@ class Store:
                 "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
             ).fetchone()
             return dict(row) if row else None
+
+    def schedule_executions(
+        self, schedule_id: int, limit: int = 30
+    ) -> t.List[t.Dict[str, t.Any]]:
+        limit = max(1, min(200, int(limit)))
+        with self._db() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM executions WHERE schedule_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (schedule_id, limit),
+            ).fetchall()
+            return [_decode_row(dict(row)) for row in rows]
 
     def list_schedules(
         self,
@@ -530,6 +739,124 @@ class Store:
                 "SELECT * FROM schedules WHERE enabled = 1 ORDER BY next_run_at, id"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def update_schedule_plan(
+        self,
+        schedule_id: int,
+        *,
+        cron: t.Optional[str],
+        run_at: t.Optional[str],
+        timezone: str,
+        catch_up: bool,
+        next_run_at: t.Optional[str],
+    ) -> bool:
+        with self._db() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE schedules SET cron = ?, run_at = ?, timezone = ?, catch_up = ?,
+                    next_run_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    cron,
+                    run_at,
+                    timezone,
+                    1 if catch_up else 0,
+                    next_run_at,
+                    now_str(),
+                    schedule_id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def replace_schedule_items(
+        self, schedule_id: int, items: t.List[t.Dict[str, t.Any]]
+    ) -> bool:
+        if not items:
+            return False
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT id FROM schedules WHERE id = ?", (schedule_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            _write_items(conn, schedule_id, items)
+            return True
+
+    def add_schedule_item(
+        self, schedule_id: int, item: t.Dict[str, t.Any]
+    ) -> t.Optional[t.List[t.Dict[str, t.Any]]]:
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            items = schedule_items(dict(row))
+            items.append(item)
+            _write_items(conn, schedule_id, items)
+            return items
+
+    def remove_schedule_item(
+        self, schedule_id: int, index: int
+    ) -> t.Optional[t.List[t.Dict[str, t.Any]]]:
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            items = schedule_items(dict(row))
+            if index < 0 or index >= len(items) or len(items) == 1:
+                return None
+            del items[index]
+            _write_items(conn, schedule_id, items)
+            return items
+
+    def duplicate_schedule(
+        self,
+        schedule_id: int,
+        *,
+        created_by: int,
+        created_by_name: str,
+        next_run_at: t.Optional[str],
+    ) -> t.Optional[int]:
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            row = dict(row)
+            items = schedule_items(row)
+            first = items[0]
+            cursor = conn.execute(
+                """
+                INSERT INTO schedules
+                (app_name, command_path, argv_json, params_json, argv_label, items_json,
+                 cron, run_at, timezone, catch_up, enabled, created_by, created_by_name,
+                 created_at, updated_at, next_run_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    first.get("app_name") or "",
+                    first.get("command_path") or "",
+                    json.dumps(first.get("argv") or [], ensure_ascii=False),
+                    json.dumps(first.get("params") or {}, ensure_ascii=False),
+                    first.get("argv_label") or "",
+                    json.dumps(items, ensure_ascii=False),
+                    row.get("cron"),
+                    row.get("run_at"),
+                    row.get("timezone"),
+                    row.get("catch_up") or 0,
+                    created_by,
+                    created_by_name,
+                    now_str(),
+                    now_str(),
+                    next_run_at,
+                ),
+            )
+            return int(cursor.lastrowid)
 
     def set_schedule_enabled(
         self, schedule_id: int, enabled: bool, next_run_at: t.Optional[str]

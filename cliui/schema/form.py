@@ -85,6 +85,8 @@ def build_command_form(
     data["run_at"] = ""
     data["timezone"] = DEFAULT_TIMEZONE
     data["catch_up"] = False
+    data["background"] = False
+    data["append_schedule_id"] = ""
 
     body: t.List[t.Dict[str, t.Any]] = [
         {
@@ -226,6 +228,45 @@ def build_command_form(
                     "actionType": "ajax",
                     "api": {"method": "post", "url": "/api/schedules/preview"},
                 },
+                {"type": "divider"},
+                {
+                    "type": "select",
+                    "name": "append_schedule_id",
+                    "label": "追加到已有计划",
+                    "clearable": True,
+                    "source": {"method": "get", "url": "/api/schedules?perPage=100"},
+                    "labelField": "title",
+                    "valueField": "id",
+                    "description": "把当前命令（含已填参数）追加到一条已有计划；"
+                    "一个计划可以包含多条命令，按顺序执行。",
+                },
+                {
+                    "type": "submit",
+                    "label": "追加到已有计划",
+                    "level": "info",
+                    "visibleOn": "this.append_schedule_id != null && this.append_schedule_id != ''",
+                    "api": {
+                        "method": "post",
+                        "url": "/api/schedules/${append_schedule_id}/items",
+                    },
+                },
+            ],
+        }
+    )
+
+    body.append(
+        {
+            "type": "panel",
+            "title": "执行选项（可选）",
+            "className": "cliui-exec-options",
+            "body": [
+                {
+                    "type": "switch",
+                    "name": "background",
+                    "label": "后台执行",
+                    "description": "适合长时间运行的任务：点击“执行”后立即返回，"
+                    "命令在后台继续运行；可在执行记录中查看最终结果。",
+                }
             ],
         }
     )

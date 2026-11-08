@@ -143,7 +143,8 @@ SQLite tables (created on first start):
 | `executions` | operator, app, node id, command path, params JSON, argv JSON, status, exit code, duration, stdout, stderr, exception, batch linkage, trigger (`manual` / `schedule`), schedule id |
 | `queue_items` | operator, app, node id, label, params, created time, sort order |
 | `batches` | operator, app, status, item count, timestamps |
-| `schedules` | app, command path, argv/params JSON, cron or run-at, timezone, catch-up flag, enabled, creator, next/last run, last status, last execution id |
+| `schedules` | one or more commands in `items_json` (app, command path, argv, params, label), plus the first item mirrored into the legacy single-command columns; cron or run-at, timezone, catch-up flag, enabled, creator, next/last run, last status, last execution id |
+| `command_favorites` | operator, app, command path (the ★ state on `/overview`) |
 | `app_specs` | registered `module:attr` specs and base working directories, published by `serve` for the standalone scheduler |
 
 All queries are scoped by `user_id`; administrators can list records across operators. Queue
@@ -151,8 +152,14 @@ operations (add, delete, move, clear) verify ownership before mutating; schedule
 `created_by` for the same check.
 
 Schema changes are applied in place: `init_db()` runs `PRAGMA table_info` against existing tables
-and adds new columns with `ALTER TABLE` (for example `executions.trigger` and
-`executions.schedule_id`), so an existing data directory keeps working after an upgrade.
+and adds new columns with `ALTER TABLE` (for example `executions.trigger`,
+`executions.schedule_id` and `schedules.items_json`), so an existing data directory keeps working
+after an upgrade. Rows created before `items_json` are normalized by `schedule_items()` into a
+single-item plan.
+
+Large stdout/stderr (>8 KB) is zlib-compressed and stored as `cliui-gzip:<base64>` text,
+transparently decoded on read, which keeps the column type and avoids a BLOB migration.
+`--retention-days N` calls `purge_executions()` at start-up; `0` disables pruning.
 
 ## Scheduling
 
@@ -174,8 +181,12 @@ process.
   `next_run_at` means another process already handled it.
 - On startup `recover_missed()` marks overdue schedules as `missed`, or — when catch-up is
   enabled — claims and runs them once.
-- A scheduled fire skips the form/argv layer: the stored argv goes straight to
-  `execute_command()`, and the record is written with `trigger='schedule'` and `schedule_id`.
+- A scheduled fire skips the form/argv layer: for each stored plan item the argv goes straight to
+  `execute_command()`, and one record per item is written with `trigger='schedule'` and
+  `schedule_id`. The overall status is `failed` > `skipped` > `success`.
+- Plans can be edited (`update_schedule_plan()` recomputes `next_run_at` and calls `sync()`),
+  duplicated (`duplicate_schedule()` copies every item into a new row) and extended/trimmed
+  (`add_schedule_item()` / `remove_schedule_item()`, which keeps at least one item).
 - `serve` publishes its registered specs into `app_specs`, so `cliui scheduler --data-dir ...`
   can start without repeating the application arguments.
 
@@ -183,11 +194,19 @@ process.
 
 - `create_app(entries, store, config)` builds the Flask app; pages are rendered server-side into
   an AMIS `embed` payload, while the browser only loads the bundled AMIS SDK.
-- Pages: `/` (console), `/overview` (all commands with one-line help, reachable by clicking the
-  CLI badge), `/records`, `/queue`, `/batches`, `/schedules`.
+- Pages: `/` (console), `/overview` (all commands with one-line help, search, favourites and
+  recents, reachable by clicking the CLI badge), `/records`, `/queue`, `/batches`, `/schedules`,
+  `/schedules/<id>` (plan detail: items, edit form, copy, recent runs).
 - Schedules API: `POST /api/schedules` (create), `POST /api/schedules/preview`,
   `GET /api/schedules`, `POST /api/schedules/<id>/run`, `POST /api/schedules/<id>/toggle`,
+  `POST /api/schedules/<id>/edit`, `POST /api/schedules/<id>/duplicate`,
+  `POST /api/schedules/<id>/items`, `DELETE /api/schedules/<id>/items/<index>`,
   `DELETE /api/schedules/<id>`; ownership is checked with `require_schedule_owned`.
+- `POST /api/execute` accepts `background=1`: it writes a `running` record, starts a daemon
+  thread, and returns immediately. The thread calls `update_execution_result()` when done.
+  `GET /api/executions/<id>` exposes the same record for polling. Execution is in-process, so a
+  running command cannot be cancelled from the UI; it stops with the server process.
+- `/overview/favorite` toggles a favourite and redirects back (preserving the `q` search term).
 - Sessions use an HMAC-signed cookie (`HttpOnly`, `SameSite=Lax`, 7-day lifetime) and a secret
   key persisted in the data directory.
 - HTML routes use `login_required`; JSON APIs use `api_login_required`, which returns 401 JSON

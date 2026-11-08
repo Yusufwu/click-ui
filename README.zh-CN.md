@@ -96,6 +96,10 @@ python examples/demo_cli.py text transform "hello world"
 - 每次执行都写入 SQLite：执行人、命令、argv、退出码、耗时、stdout、stderr、异常信息。
 - 记录按执行人隔离，管理员可筛选并查看全部；失败、预览、批量中的每一项都单独保存。
 - 输出长度、上传大小都有上限，避免异常命令撑爆存储。
+- 超过 8 KB 的 stdout/stderr 会自动用 zlib 压缩存储（读取时透明解压）；
+  `--retention-days N` 会在启动时清理超过 N 天的旧记录。
+- 长任务可勾选“后台执行”：立即返回，记录先标记为“执行中”，完成后自动回填；
+  也可用 `GET /api/executions/<id>` 轮询状态与输出。
 
 **队列与批量执行**
 
@@ -111,11 +115,15 @@ python examples/demo_cli.py text transform "hello world"
   （同进程线程）；两种形态共用同一套调度逻辑与同一个 SQLite 数据库。
 - 调度器停机期间错过的触发默认记为 `missed`，可按任务开启“停机补跑一次”。
 - 每个触发通过 SQLite 原子抢占，多进程不会重复执行；执行记录标记来源“定时”并关联任务编号。
+- 一个计划可以包含多条命令：在命令表单的“追加到已有计划”里选择计划即可追加；
+  详情页可查看、移除命令，并可修改计划时间。
+- 同一组命令可以“复制为新计划”，再分别设置不同的 Cron / 单次时间。
 - 普通用户只能管理自己创建的定时任务，管理员可以查看全部。
 
 **命令总览**
 
 - `/overview` 汇总所有已注册应用的命令树，每个命令附一句话说明；点击命令直接进入对应表单。
+- 支持按路径或说明搜索；点击 ★ 收藏命令，“我的收藏 / 最近使用”会以快捷标签固定在顶部。
 - 点击左上角的 **CLI** 标记可随时回到命令总览。
 
 **多应用、多账号**
@@ -223,6 +231,7 @@ flowchart LR
 | `--open/--no-open` | 关闭 | 启动后自动打开浏览器 |
 | `--scheduler/--no-scheduler` | 关闭 | 在 Web 进程内启动定时调度线程（开发推荐） |
 | `--scheduler-wait-seconds` | `0` | 定时触发等待执行锁的秒数，超时记录为 `skipped` |
+| `--retention-days` | `0` | 启动时删除超过 N 天的执行记录；`0` 表示永久保留 |
 
 ### 环境变量
 
@@ -241,6 +250,7 @@ flowchart LR
 | `--db-path` | `<data-dir>/cliui.sqlite3` | 自定义 SQLite 路径 |
 | `--max-output-chars` | `200000` | 单条输出最多保存的字符数 |
 | `--scheduler-wait-seconds` | `0` | 等待执行锁的秒数，超时记录为 `skipped` |
+| `--retention-days` | `0` | 启动时删除超过 N 天的执行记录；`0` 表示永久保留 |
 
 `cliui scheduler` 与 Web 控制台可以同时运行：任务配置保存在 SQLite，触发时用
 `next_run_at` 做原子抢占，同一时刻只会有一个进程执行。生产环境推荐把调度器交给

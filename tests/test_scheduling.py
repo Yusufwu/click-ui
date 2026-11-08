@@ -12,7 +12,7 @@ from cliui.scheduling import (
     validate_schedule,
 )
 from cliui.storage.db import init_db
-from cliui.storage.repo import Store
+from cliui.storage.repo import Store, schedule_items
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -344,3 +344,118 @@ def test_migration_adds_schedule_columns(tmp_path):
 
     assert {"trigger", "schedule_id"} <= columns
     assert {"schedules", "app_specs"} <= tables
+
+
+def test_multi_item_plan_runs_each_command(admin_client, fixture_entry, store):
+    data = schedule_payload(fixture_entry, text="first")
+    schedule_id = admin_client.post("/api/schedules", json=data).get_json()["data"][
+        "schedule_id"
+    ]
+
+    second = schedule_payload(fixture_entry, text="second")
+    body = admin_client.post(
+        f"/api/schedules/{schedule_id}/items", json=second
+    ).get_json()
+    assert body["status"] == 0, body
+    assert body["data"]["items_count"] == 2
+
+    item = admin_client.get("/api/schedules").get_json()["data"]["items"][0]
+    assert item["items_count"] == 2
+    assert "共 2 条" in item["command_summary"]
+
+    body = admin_client.post(f"/api/schedules/{schedule_id}/run").get_json()
+    assert body["status"] == 0, body
+    rows = store.schedule_executions(schedule_id)
+    assert len(rows) == 2
+    assert all(row["trigger"] == "schedule" for row in rows)
+    assert "first" in rows[1]["stdout"]
+    assert "second" in rows[0]["stdout"]
+
+    schedule = store.get_schedule(schedule_id)
+    assert schedule["last_status"] == "success"
+    assert schedule["last_execution_id"] == rows[0]["id"]
+
+
+def test_schedule_edit_and_duplicate(admin_client, fixture_entry, store):
+    data = schedule_payload(fixture_entry, text="edit")
+    schedule_id = admin_client.post("/api/schedules", json=data).get_json()["data"][
+        "schedule_id"
+    ]
+
+    body = admin_client.post(
+        f"/api/schedules/{schedule_id}/edit",
+        json={
+            "trigger_type": "cron",
+            "cron": "0 3 * * *",
+            "timezone": "Asia/Shanghai",
+        },
+    ).get_json()
+    assert body["status"] == 0, body
+    assert body["data"]["next_run_at"].endswith("03:00:00")
+    assert store.get_schedule(schedule_id)["cron"] == "0 3 * * *"
+
+    invalid = admin_client.post(
+        f"/api/schedules/{schedule_id}/edit",
+        json={"trigger_type": "cron", "cron": "not a cron", "timezone": "Asia/Shanghai"},
+    ).get_json()
+    assert invalid["status"] == 1
+    assert store.get_schedule(schedule_id)["cron"] == "0 3 * * *"
+
+    duplicated = admin_client.post(
+        f"/api/schedules/{schedule_id}/duplicate"
+    ).get_json()
+    assert duplicated["status"] == 0, duplicated
+    new_id = duplicated["data"]["schedule_id"]
+    assert new_id != schedule_id
+    assert admin_client.get("/api/schedules").get_json()["data"]["total"] == 2
+    assert store.get_schedule(new_id)["cron"] == "0 3 * * *"
+    assert schedule_items(store.get_schedule(new_id)) == schedule_items(
+        store.get_schedule(schedule_id)
+    )
+
+
+def test_schedule_detail_page_and_item_removal(admin_client, fixture_entry, store):
+    data = schedule_payload(fixture_entry, text="detail")
+    schedule_id = admin_client.post("/api/schedules", json=data).get_json()["data"][
+        "schedule_id"
+    ]
+    admin_client.post(
+        f"/api/schedules/{schedule_id}/items",
+        json=schedule_payload(fixture_entry, text="second"),
+    )
+
+    response = admin_client.get(f"/schedules/{schedule_id}")
+    assert response.status_code == 200
+    page = response.get_data(as_text=True)
+    assert "计划设置" in page
+    assert "命令列表（2 条）" in page
+    assert f"/schedules/{schedule_id}/items/0/remove" in page
+
+    response = admin_client.post(f"/schedules/{schedule_id}/items/0/remove")
+    assert response.status_code == 302
+    assert len(schedule_items(store.get_schedule(schedule_id))) == 1
+
+    response = admin_client.post(f"/schedules/{schedule_id}/items/0/remove")
+    assert response.status_code == 400
+
+
+def test_schedule_page_forms_run_toggle_and_copy(admin_client, fixture_entry, store):
+    data = schedule_payload(fixture_entry, text="forms")
+    schedule_id = admin_client.post("/api/schedules", json=data).get_json()["data"][
+        "schedule_id"
+    ]
+
+    response = admin_client.post(f"/schedules/{schedule_id}/run")
+    assert response.status_code == 302
+    assert store.get_schedule(schedule_id)["last_status"] == "success"
+
+    response = admin_client.post(
+        f"/schedules/{schedule_id}/toggle", data={"enabled": "0"}
+    )
+    assert response.status_code == 302
+    assert store.get_schedule(schedule_id)["enabled"] == 0
+
+    response = admin_client.post(f"/schedules/{schedule_id}/duplicate")
+    assert response.status_code == 302
+    assert response.headers["Location"].startswith("/schedules/")
+    assert admin_client.get("/api/schedules").get_json()["data"]["total"] == 2
